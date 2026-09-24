@@ -190,8 +190,10 @@ SfbSynthReadBlocks (IN EFI_BLOCK_IO_PROTOCOL *This,
 
     if (Cur == 0) {
       CopyMem (Dest, Disk->Mbr, Disk->BlockSize);
-    } else if (Cur == 1 || Cur == LastLba) {
+    } else if (Cur == 1) {
       CopyMem (Dest, Disk->Header, Disk->BlockSize);
+    } else if (Cur == LastLba) {
+      CopyMem (Dest, Disk->BackupHeader, Disk->BlockSize);
     } else if (Cur >= 2 && Cur < 2 + Disk->EntryBlocks) {
       CopyMem (Dest,
                Disk->Entries + (UINTN)(Cur - 2) * Disk->BlockSize,
@@ -329,6 +331,40 @@ SfbSynthDiskInitCommon (IN EFI_BLOCK_IO_PROTOCOL *Backing,
   return EFI_SUCCESS;
 }
 
+/*
+ * Fill one 92-byte GPT header into Hdr's (zeroed) block. MyLba/AltLba and the
+ * entry-array LBA differ between the primary and backup headers; the CRC is
+ * computed over each header's own bytes with the CRC field zero, per spec.
+ */
+STATIC
+VOID
+SfbSynthFillHeader (IN SFB_SYNTH_DISK *Disk,
+                    IN UINT8          *Hdr,
+                    IN UINT64         MyLba,
+                    IN UINT64         AltLba,
+                    IN UINT64         EntriesLba)
+{
+  UINT32  Crc;
+
+  CopyMem (Hdr, "EFI PART", 8);
+  SfbSynthPut32 (Hdr + 8, 0x00010000);
+  SfbSynthPut32 (Hdr + 12, SFB_SYNTH_GPT_HDR_SIZE);
+  SfbSynthPut32 (Hdr + 16, 0);
+  SfbSynthPut64 (Hdr + 24, MyLba);
+  SfbSynthPut64 (Hdr + 32, AltLba);
+  SfbSynthPut64 (Hdr + 40, Disk->DataStartLba);
+  SfbSynthPut64 (Hdr + 48, Disk->DataStartLba + Disk->DataBlocks - 1);
+  CopyGuid ((EFI_GUID *)(Hdr + 56), &mSfbSynthDiskGuid);
+  SfbSynthPut64 (Hdr + 72, EntriesLba);
+  SfbSynthPut32 (Hdr + 80, SFB_SYNTH_ENTRY_COUNT);
+  SfbSynthPut32 (Hdr + 84, SFB_SYNTH_ENTRY_BYTES);
+  SfbSynthPut32 (Hdr + 88,
+                 CalculateCrc32 (Disk->Entries,
+                                 SFB_SYNTH_ENTRY_COUNT * SFB_SYNTH_ENTRY_BYTES));
+  Crc = CalculateCrc32 (Hdr, SFB_SYNTH_GPT_HDR_SIZE);
+  SfbSynthPut32 (Hdr + 16, Crc);
+}
+
 STATIC
 VOID
 SfbSynthFillTables (IN SFB_SYNTH_DISK *Disk,
@@ -336,13 +372,14 @@ SfbSynthFillTables (IN SFB_SYNTH_DISK *Disk,
                     IN CONST CHAR16   *Name)
 {
   EFI_PARTITION_ENTRY  *Entry;
-  UINT32               Crc;
+  UINT64               LastLba = Disk->TotalBlocks - 1;
+  UINT64               BackupEntries = LastLba - Disk->EntryBlocks;
 
   /* Protective MBR: one 0xEE entry spanning the disk (clamped to 32 bits),
    * boot signature at the end of the block. */
   Disk->Mbr[446] = 0x00;
-  Disk->Mbr[447] = 0x02;
-  Disk->Mbr[448] = 0x00;
+  Disk->Mbr[447] = 0x00;
+  Disk->Mbr[448] = 0x02;
   Disk->Mbr[450] = 0xEE;
   Disk->Mbr[451] = 0xFE;
   Disk->Mbr[452] = 0xFF;
@@ -372,27 +409,10 @@ SfbSynthFillTables (IN SFB_SYNTH_DISK *Disk,
     CopyMem (Entry->PartitionName, Name, Len * sizeof (CHAR16));
   }
 
-  Crc = CalculateCrc32 (Disk->Entries,
-                        SFB_SYNTH_ENTRY_COUNT * SFB_SYNTH_ENTRY_BYTES);
-
-  /* GPT header. CRC is computed over the 92-byte header with the CRC field
-   * itself zero, per the spec. */
-  CopyMem (Disk->Header, "EFI PART", 8);
-  SfbSynthPut32 (Disk->Header + 8, 0x00010000);
-  SfbSynthPut32 (Disk->Header + 12, SFB_SYNTH_GPT_HDR_SIZE);
-  SfbSynthPut32 (Disk->Header + 16, 0);
-  SfbSynthPut64 (Disk->Header + 24, 1);
-  SfbSynthPut64 (Disk->Header + 32, Disk->TotalBlocks - 1);
-  SfbSynthPut64 (Disk->Header + 40, Disk->DataStartLba);
-  SfbSynthPut64 (Disk->Header + 48,
-                 Disk->DataStartLba + Disk->DataBlocks - 1);
-  CopyGuid ((EFI_GUID *)(Disk->Header + 56), &mSfbSynthDiskGuid);
-  SfbSynthPut64 (Disk->Header + 72, 2);
-  SfbSynthPut32 (Disk->Header + 80, SFB_SYNTH_ENTRY_COUNT);
-  SfbSynthPut32 (Disk->Header + 84, SFB_SYNTH_ENTRY_BYTES);
-  SfbSynthPut32 (Disk->Header + 88, Crc);
-  SfbSynthPut32 (Disk->Header + 16,
-                 CalculateCrc32 (Disk->Header, SFB_SYNTH_GPT_HDR_SIZE));
+  /* Primary header at LBA1 points its alternate and entry array forward;
+   * the backup header at the last LBA mirrors both, per spec. */
+  SfbSynthFillHeader (Disk, Disk->Header, 1, LastLba, 2);
+  SfbSynthFillHeader (Disk, Disk->BackupHeader, LastLba, 1, BackupEntries);
 }
 
 EFI_STATUS
@@ -428,8 +448,10 @@ SfbSynthDiskCreate (IN EFI_BLOCK_IO_PROTOCOL *Backing,
 
   Out->Mbr = AllocateZeroPool (BlockSize);
   Out->Header = AllocateZeroPool (BlockSize);
+  Out->BackupHeader = AllocateZeroPool (BlockSize);
   Out->Entries = AllocateZeroPool ((UINTN)Out->EntryBlocks * BlockSize);
-  if (Out->Mbr == NULL || Out->Header == NULL || Out->Entries == NULL) {
+  if (Out->Mbr == NULL || Out->Header == NULL || Out->BackupHeader == NULL ||
+      Out->Entries == NULL) {
     SfbSynthDiskDestroy (Out);
     return EFI_OUT_OF_RESOURCES;
   }
@@ -501,6 +523,9 @@ SfbSynthDiskDestroy (IN SFB_SYNTH_DISK *Disk)
   }
   if (Disk->Header != NULL) {
     FreePool (Disk->Header);
+  }
+  if (Disk->BackupHeader != NULL) {
+    FreePool (Disk->BackupHeader);
   }
   if (Disk->Entries != NULL) {
     FreePool (Disk->Entries);

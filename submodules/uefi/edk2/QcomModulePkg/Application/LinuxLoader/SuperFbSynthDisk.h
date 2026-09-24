@@ -41,9 +41,10 @@ typedef struct {
   UINT64                 TotalBlocks;
   UINT32                 BlockSize;
 
-  UINT8                  *Mbr;     /* one block */
-  UINT8                  *Header;  /* one block */
-  UINT8                  *Entries; /* EntryBlocks * BlockSize */
+  UINT8                  *Mbr;          /* one block */
+  UINT8                  *Header;       /* one block, primary (MyLBA=1) */
+  UINT8                  *BackupHeader; /* one block, mirrored at the last LBA */
+  UINT8                  *Entries;      /* EntryBlocks * BlockSize */
   UINT32                 EntryBlocks;
 } SFB_SYNTH_DISK;
 
