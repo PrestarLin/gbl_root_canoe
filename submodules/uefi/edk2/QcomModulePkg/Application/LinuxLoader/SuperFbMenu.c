@@ -266,6 +266,33 @@ SfbShowEnteringMenu (VOID)
   gST->ConIn->Reset (gST->ConIn, FALSE);
 }
 
+/* ---- shared screens ------------------------------------------------------- */
+
+/*
+ * Seconds to hold on an "Entering <submenu>" screen before the submenu starts
+ * taking input. Short of the root menu's three-second hold on purpose: the
+ * parent's confirm keystroke is already consumed, this only covers a key still
+ * held or its trailing repeat events.
+ */
+#define SFB_ENTERING_SCREEN_DELAY_S  1
+
+VOID
+SfbShowEnteringScreen (IN CONST CHAR16 *What)
+{
+  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
+  gST->ConOut->ClearScreen (gST->ConOut);
+  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+
+  Print (L"Entering %s\r\n", (What != NULL) ? What : L"...");
+
+  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+
+  /* Wait for the key to be released, then drop anything typed or held during
+   * the wait so it does not leak into the submenu as a spurious keypress. */
+  gBS->Stall (SFB_ENTERING_SCREEN_DELAY_S * 1000 * 1000);
+  gST->ConIn->Reset (gST->ConIn, FALSE);
+}
+
 /* ---- boot menu ---------------------------------------------------------- */
 
 STATIC

@@ -2296,6 +2296,25 @@ CmdReboot (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
   FastbootFail ("Failed to reboot");
 }
 
+/*
+ * Leave fastboot and hand control back to the boot menu, in answer to either
+ * "exit" or "oem exit" from the host. The OKAY must leave the wire before the
+ * gadget is torn down, so the transfer is drained before the request is made;
+ * the menu redraws once FastbootInitialize returns.
+ */
+STATIC VOID
+CmdExitToMenu (IN CONST CHAR8 *arg, IN VOID *data, IN UINT32 sz)
+{
+  (VOID)arg;
+  (VOID)data;
+  (VOID)sz;
+
+  DEBUG ((EFI_D_INFO, "exit to boot menu requested\n"));
+  FastbootOkay ("");
+  WaitForTransferComplete ();
+  FastbootRequestExitToMenu ();
+}
+
 STATIC VOID UpdateGetVarVariable (VOID)
 {
 }
@@ -2724,6 +2743,8 @@ FastbootCommandSetup (IN VOID *Base, IN UINT64 Size)
       {"boot", CmdBoot},
 #endif
       {"reboot", CmdReboot},
+      {"exit", CmdExitToMenu},
+      {"oem exit", CmdExitToMenu},
       {"getvar:", CmdGetVar},
       {"download:", CmdDownload},
   };

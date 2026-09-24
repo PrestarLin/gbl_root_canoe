@@ -399,6 +399,8 @@ SfbAdvExportPartitionFlow (VOID)
   SFB_ADV_PARTITION *Parts;
   UINTN       PartCount;
 
+  SfbShowEnteringScreen (L"Export a partition");
+
   while (TRUE) {
     LunCount = SfbAdvCollectLuns (Luns);
     if (LunCount == 0) {
@@ -427,6 +429,8 @@ SfbAdvExportPartitionFlow (VOID)
 
     /* Partition picker on the chosen LUN. */
     while (TRUE) {
+      SfbShowEnteringScreen (L"Partition Picker");
+
       PartCount = SfbAdvCollectPartitions (Lun, &Parts);
       if (PartCount == 0) {
         SfbReportStatus (L"No partitions on this LUN", EFI_NOT_FOUND);
@@ -471,6 +475,8 @@ SfbAdvExportLunFlow (VOID)
   UINTN       Index;
   INTN        Chosen;
 
+  SfbShowEnteringScreen (L"Export a LUN");
+
   while (TRUE) {
     LunCount = SfbAdvCollectLuns (Luns);
     if (LunCount == 0) {
@@ -511,6 +517,8 @@ SfbRunMassStorageMenu (VOID)
   };
   INTN Chosen;
 
+  SfbShowEnteringScreen (L"USB Mass Storage");
+
   while (TRUE) {
     Chosen = SfbAdvChoose (L"USB Mass Storage",
                            L"Expose device storage to the host over USB.",
@@ -533,6 +541,8 @@ SfbRunAdvancedMenu (VOID)
     L"USB Mass Storage >"
   };
   INTN Chosen;
+
+  SfbShowEnteringScreen (L"Advanced");
 
   while (TRUE) {
     Chosen = SfbAdvChoose (L"Advanced", NULL, Rows, 1, 0);
