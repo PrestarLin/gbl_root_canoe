@@ -76,6 +76,12 @@
 	SuperFbEntries.c
 	SuperFbMenu.c
 	SuperFbBrowser.c
+	SuperFbAdvanced.h
+	SuperFbAdvanced.c
+	SuperFbSynthDisk.h
+	SuperFbSynthDisk.c
+	SuperFbUsbMsd.h
+	SuperFbUsbMsd.c
 
 [Packages]
 	ArmPkg/ArmPkg.dec

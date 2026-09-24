@@ -73,6 +73,8 @@ typedef enum {
   /* Built-in entries; no backing file, handled in code. */
   SfbEntryFastboot,
   SfbEntrySelector,
+  /* Opens the Advanced submenu (USB mass-storage export and friends). */
+  SfbEntryAdvanced,
   /* "Back" row at the foot of a submenu: returns to the parent menu. */
   SfbEntryBack,
   /* Power management actions offered at the end of the menu and on the

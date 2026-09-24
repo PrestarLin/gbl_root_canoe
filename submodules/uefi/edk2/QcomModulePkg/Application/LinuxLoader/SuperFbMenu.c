@@ -9,6 +9,7 @@
  */
 
 #include "SuperFbMenu.h"
+#include "SuperFbAdvanced.h"
 
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -450,6 +451,12 @@ SfbRunBootMenu (VOID)
     case SfbEntrySelector:
       SfbRunFileBrowser ();
       /* The browser may have added a custom entry. */
+      Rebuild = TRUE;
+      break;
+
+    case SfbEntryAdvanced:
+      SfbRunAdvancedMenu ();
+      /* Storage and media state changed inside the submenu. */
       Rebuild = TRUE;
       break;
 
