@@ -66,6 +66,7 @@ found at
 #define PVMFW_CONFIG_MAX_BLOBS 2
 /* Return True if integer overflow will occur */
 #define CHECK_ADD64(a, b) ((MAX_UINT64 - b < a) ? TRUE : FALSE)
+#include "FastbootResponse.h"
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -303,14 +304,12 @@ UINTN GetXfrSize (VOID)
 STATIC VOID
 FastbootAck (IN CONST CHAR8 *code, CONST CHAR8 *Reason)
 {
-  if (Reason == NULL)
-    Reason = "";
-
-  AsciiSPrint (GetFastbootDeviceData ()->gTxBuffer, MAX_RSP_SIZE, "%a%a", code,
-               Reason);
+  /* gTxBuffer is a USB_BUFF_SIZE allocation, including room for the local
+   * terminator after a full 64-byte protocol response. */
+  UINTN Length = SfbFastbootEncodeResponse (
+      code, Reason, GetFastbootDeviceData ()->gTxBuffer);
   GetFastbootDeviceData ()->UsbDeviceProtocol->Send (
-      ENDPOINT_OUT, AsciiStrLen (GetFastbootDeviceData ()->gTxBuffer),
-      GetFastbootDeviceData ()->gTxBuffer);
+      ENDPOINT_OUT, Length, GetFastbootDeviceData ()->gTxBuffer);
   DEBUG ((EFI_D_VERBOSE, "Sending %d:%a\n",
           AsciiStrLen (GetFastbootDeviceData ()->gTxBuffer),
           GetFastbootDeviceData ()->gTxBuffer));
@@ -2301,22 +2300,22 @@ STATIC VOID UpdateGetVarVariable (VOID)
 {
 }
 
+STATIC VOID
+FastbootGetVarInfo (CONST CHAR8 *Payload)
+{
+  FastbootInfo (Payload);
+  /* The next fragment must not overwrite an in-flight transfer buffer. */
+  WaitForTransferComplete ();
+}
+
 STATIC VOID CmdGetVarAll (VOID)
 {
   FASTBOOT_VAR *Var;
-  CHAR8 GetVarAll[MAX_RSP_SIZE];
 
-  for (Var = Varlist; Var; Var = Var->next) {
-    AsciiStrnCpyS (GetVarAll, sizeof (GetVarAll), Var->name, MAX_RSP_SIZE);
-    AsciiStrnCatS (GetVarAll, sizeof (GetVarAll), ":", AsciiStrLen (":"));
-    AsciiStrnCatS (GetVarAll, sizeof (GetVarAll), Var->value, MAX_RSP_SIZE);
-    FastbootInfo (GetVarAll);
-    /* Wait for the transfer to complete */
-    WaitForTransferComplete ();
-    ZeroMem (GetVarAll, sizeof (GetVarAll));
-  }
+  for (Var = Varlist; Var; Var = Var->next)
+    SfbFastbootGetVarInfo (Var->name, Var->value, FastbootGetVarInfo);
 
-  FastbootOkay (GetVarAll);
+  FastbootOkay ("");
 }
 
 STATIC VOID
