@@ -242,7 +242,19 @@ SfbSynthWriteBlocks (IN EFI_BLOCK_IO_PROTOCOL *This,
   UINT64          DataEnd = Disk->DataStartLba + Disk->DataBlocks;
 
   if (Disk->Media.ReadOnly) {
-    return EFI_WRITE_PROTECTED;
+    /*
+     * Drop the write and report success. Windows automounts every volume it
+     * recognises on an attached disk and fires writes (dirty bits, journal
+     * replay markers) even on one it should treat as write-protected, and
+     * the resident MSD driver does not translate a failed BlkIo write into
+     * a clean SCSI error - the host then blocks forever waiting for the
+     * bulk transfer the driver never finishes, which presents as
+     * DiskGenius/Disk Management hanging on attach. A silently swallowed
+     * write cannot hang anything; the read-only choice means nothing was
+     * meant to persist anyway. Media.ReadOnly stays set so drivers that do
+     * honour it still report write-protect through SCSI mode sense.
+     */
+    return EFI_SUCCESS;
   }
   Status = SfbSynthCheck (Disk, MediaId, FirstLba, BufferSize, Buffer, &Blocks);
   if (EFI_ERROR (Status)) {
@@ -289,6 +301,11 @@ SfbSynthFlush (IN EFI_BLOCK_IO_PROTOCOL *This)
 {
   SFB_SYNTH_DISK  *Disk = (SFB_SYNTH_DISK *)This;
 
+  /* Nothing a read-only export ever dropped needs flushing, and a flushed
+   * write-protected device is another vendor error path worth avoiding. */
+  if (Disk->Media.ReadOnly) {
+    return EFI_SUCCESS;
+  }
   if (Disk->Backing->FlushBlocks == NULL) {
     return EFI_SUCCESS;
   }
