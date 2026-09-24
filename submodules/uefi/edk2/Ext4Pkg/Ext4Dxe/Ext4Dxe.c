@@ -179,12 +179,8 @@ Ext4Stop (
 
   HasDiskIo2 = Ext4DiskIo2 (Partition) != NULL;
 
-  Status = Ext4UnmountAndFreePartition (Partition);
-
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
+  /* A refused disconnect must leave the published interface usable. Do not
+   * free its private state until the protocol has actually been withdrawn. */
   Status = gBS->UninstallMultipleProtocolInterfaces (
                   ControllerHandle,
                   &gEfiSimpleFileSystemProtocolGuid,
@@ -192,6 +188,11 @@ Ext4Stop (
                   NULL
                   );
 
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = Ext4UnmountAndFreePartition (Partition);
   if (EFI_ERROR (Status)) {
     return Status;
   }
@@ -368,7 +369,7 @@ Ext4Bind (
 
   DiskIo2 = NULL;
 
-  DEBUG ((EFI_D_INFO, "[Ext4] Binding to controller\n"));
+  DEBUG ((EFI_D_VERBOSE, "[Ext4] Binding to controller\n"));
 
   Status = gBS->OpenProtocol (
                   ControllerHandle,
@@ -383,7 +384,7 @@ Ext4Bind (
     return Status;
   }
 
-  DEBUG ((EFI_D_INFO, "[Ext4] Controller supports DISK_IO\n"));
+  DEBUG ((EFI_D_VERBOSE, "[Ext4] Controller supports DISK_IO\n"));
 
   Status = gBS->OpenProtocol (
                   ControllerHandle,
@@ -396,7 +397,7 @@ Ext4Bind (
   // It's okay to not support DISK_IO2
 
   if(DiskIo2 != NULL) {
-    DEBUG ((EFI_D_INFO, "[Ext4] Controller supports DISK_IO2\n"));
+    DEBUG ((EFI_D_VERBOSE, "[Ext4] Controller supports DISK_IO2\n"));
   }
 
   Status = gBS->OpenProtocol (
@@ -412,7 +413,7 @@ Ext4Bind (
     goto Error;
   }
 
-  DEBUG ((EFI_D_INFO, "Opening partition\n"));
+  DEBUG ((EFI_D_VERBOSE, "Opening partition\n"));
 
   Status = Ext4OpenPartition (ControllerHandle, DiskIo, DiskIo2, blockIo);
 
@@ -420,7 +421,10 @@ Ext4Bind (
     return Status;
   }
 
-  DEBUG ((EFI_D_INFO, "[ext4] Error mounting %x\n", Status));
+  /* ConnectController probes this driver against every disk handle. A mount
+   * rejection is therefore normal discovery noise, not a runtime failure. */
+  DEBUG ((EFI_D_VERBOSE, "[ext4] Mount probe rejected controller: %r\n",
+          Status));
 
 Error:
   if(DiskIo) {
