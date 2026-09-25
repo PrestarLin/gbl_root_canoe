@@ -286,6 +286,8 @@ SfbDriverActionMenu (IN EFI_HANDLE   Volume,
   UINTN  Cursor = 0;
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN       Index;
     SFB_KEY     Key;
     EFI_STATUS  Status;
@@ -358,6 +360,8 @@ SfbEfiActionMenu (IN EFI_HANDLE   Volume,
   }
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN    Index;
     SFB_KEY  Key;
 
@@ -429,6 +433,8 @@ SfbBrowseVolume (IN EFI_HANDLE   Volume,
   StrCpyS (Path, SFB_PATH_CHARS, BrowseRoot);
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN                Start;
     UINTN                Last;
     UINTN                Index;
@@ -626,6 +632,8 @@ SfbRunFileBrowser (VOID)
   RowCount = VolumeCount + 1;
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN    Start;
     UINTN    Last;
     SFB_KEY  Key;
