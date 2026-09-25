@@ -1542,7 +1542,7 @@ Out:
   if (Root != NULL) {
     Root->Close (Root);
   }
-  if (LogRoot != NULL) {
+  if (LogRoot != NULL && LogRoot != Root) {
     LogRoot->Close (LogRoot);
   }
   if (Kernel != NULL) {
