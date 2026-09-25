@@ -356,13 +356,6 @@ SfbShowBootingScreen (IN CONST CHAR16 *Name,
                       IN CONST CHAR16 *FilePath,
                       IN BOOLEAN       ClearScreen);
 
-/*
- * Format a status line the same way Print would, then draw it centered with
- * the menu font and hold until the user acknowledges it.
- */
-VOID
-SfbReportStatusFormat (IN CONST CHAR16 *What, IN EFI_STATUS Status);
-
 /* Wait for a key. TimeoutMs of 0 waits indefinitely. */
 SFB_KEY
 SfbWaitForKey (IN UINT32 TimeoutMs);
