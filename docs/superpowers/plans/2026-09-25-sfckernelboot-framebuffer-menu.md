@@ -473,11 +473,16 @@ SfbDisablePhoenixWatchdog (VOID)
 - [ ] **Step 3: 菜单各循环 arm（SuperFbMenu.c）**
 
 ```bash
-grep -n "while (TRUE)" submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbMenu.c
-grep -n "SfbWaitForKey" submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbMenu.c
+grep -n "while (TRUE)" submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbMenu.c submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbBrowser.c
+grep -n "SfbWaitForKey" submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbMenu.c submodules/uefi/edk2/QcomModulePkg/Application/LinuxLoader/SuperFbBrowser.c
 ```
 
-对**每个**含 `SfbWaitForKey` 调用的 `while (TRUE)` 循环（预期 2 个：`SfbRunBootMenu`、`SfbRunSubMenu`；`SfbWaitForKey` 自身实现与 `SfbReportStatus` 暂停的循环**不加**），在 `while (TRUE) {` 后第一行插入：
+对**每个**含 `SfbWaitForKey` 调用的 `while (TRUE)` 循环，在 `while (TRUE) {` 后第一行插入：
+
+- `SuperFbMenu.c` 预期 2 个：`SfbRunBootMenu`、`SfbRunSubMenu`；
+- `SuperFbBrowser.c` 预期 4 个：`SfbDriverActionMenu`、`SfbAppActionMenu`、`SfbBrowseVolume`、`SfbRunFileBrowser`
+  （终审补：原 Step 3 只扫 SuperFbMenu.c，浏览器 4 个循环漏 arm，修复见 `9366e142`）；
+- `SfbWaitForKey` 自身实现、`SfbReportStatus` 暂停与目录枚举循环**不加**。
 
 ```c
     /* Five minutes without any key: reset the handset (spec §5). */
@@ -529,7 +534,7 @@ grep -rn "SfbDisablePhoenixWatchdog\|SetWatchdogTimer" \
   submodules/uefi/edk2/QcomModulePkg/Library/FastbootLib/ | grep -v "^\s*\*"
 ```
 
-预期命中 = 8：Phoenix 定义 1 + Phoenix 调用 1 + 菜单 arm 2 + fastboot arm 1 + entries disarm 2 + 既有 FastbootCmds.c:2182 1。少任何一个 → 回查 Step 3-5。
+预期命中 = 12：Phoenix 定义 1 + Phoenix 调用 1 + 菜单 arm 2 + 浏览器 arm 4（终审补，见 `9366e142`）+ fastboot arm 1 + entries disarm 2 + 既有 FastbootCmds.c:2182 1。少任何一个 → 回查 Step 3-5。
 核对 Phoenix error 分支（Step 1 代码）：`EFI_ERROR || NULL` → 仅 INFO 日志 + return，无解引用。
 
 ```bash
