@@ -73,6 +73,8 @@ typedef enum {
   /* Built-in entries; no backing file, handled in code. */
   SfbEntryFastboot,
   SfbEntrySelector,
+  /* The wait-time settings screen (SfbRunSettings). */
+  SfbEntrySettings,
   /* "Back" row at the foot of a submenu: returns to the parent menu. */
   SfbEntryBack,
   /* Power management actions offered at the end of the menu and on the
@@ -214,16 +216,47 @@ SfbGetVolumeLabel (IN EFI_FILE_PROTOCOL *Root,
 /* ---- SuperFbStore.c: settings kept in the tail of the ESP ---------------- */
 
 /*
- * The firmware on this platform rejects variables it does not know, so the two
+ * The firmware on this platform rejects variables it does not know, so the
  * things the menu has to remember outlive a reboot in the EFI System Partition
- * instead: two 1 KiB NUL-padded ASCII records written to the very end of the
+ * instead: 1 KiB NUL-padded ASCII records written to the very end of the
  * partition, which is the only part of it that is safe to touch.
+ *
+ * The records sit at the partition's end and the region starts
+ * SFB_STORE_BYTES before it, so adding a slot grows the region forwards into
+ * the scratch megabyte and leaves the older records exactly where they were:
+ * the settings record is new space at the front, while the default and custom
+ * entry records keep their old physical offsets as slots 1 and 2.
  */
 #define SFB_STORE_SLOT_BYTES  1024
-#define SFB_STORE_SLOTS       2
+#define SFB_STORE_SLOTS       3
 
-#define SFB_STORE_DEFAULT  0   /* the entry the menu timeout launches */
-#define SFB_STORE_CUSTOM   1   /* the single user-added menu entry */
+#define SFB_STORE_SETTINGS  0   /* the wait-time settings record (new front) */
+#define SFB_STORE_DEFAULT   1   /* the entry the menu timeout launches */
+#define SFB_STORE_CUSTOM    2   /* the single user-added menu entry */
+
+/* ---- wait-time settings, stored in SFB_STORE_SETTINGS ------------------- */
+
+typedef struct {
+  /* Countdown before the menu launches the default entry; 0 waits forever. */
+  UINT32  AutoBootSeconds;
+  /* Power-on window that looks for a held Volume Up; 0 is not allowed. */
+  UINT32  VolWaitMs;
+} SFB_SETTINGS;
+
+#define SFB_AUTO_BOOT_DEFAULT   10
+#define SFB_AUTO_BOOT_MAX       60
+#define SFB_VOL_WAIT_DEFAULT_MS 1000
+#define SFB_VOL_WAIT_MIN_MS     200
+#define SFB_VOL_WAIT_MAX_MS     3000
+#define SFB_VOL_WAIT_STEP_MS    100
+
+/* Load the stored settings, substituting defaults for missing/garbage data. */
+VOID
+SfbSettingsLoad (OUT SFB_SETTINGS *Settings);
+
+/* Persist Settings. Returns EFI_WRITE_PROTECTED on a read-only ESP. */
+EFI_STATUS
+SfbSettingsSave (IN CONST SFB_SETTINGS *Settings);
 
 /*
  * Replace one record. Text is NUL-terminated ASCII of at most

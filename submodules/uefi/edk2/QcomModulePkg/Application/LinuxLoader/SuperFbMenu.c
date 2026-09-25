@@ -95,6 +95,7 @@ SfbGfxLayout (VOID)
   UINTN  TitleH;
   UINTN  FooterH;
   UINTN  Slot;
+  UINTN  MaxSlot;
 
   mGfxUi = FALSE;
   if (!SfbGfxReady ()) {
@@ -132,22 +133,31 @@ SfbGfxLayout (VOID)
     return FALSE;
   }
 
-  Slot = (mGfxContentBottom - mGfxContentTop) /
-         (mGfxRowLimit == 0 ? SFB_VISIBLE_ROWS : mGfxRowLimit);
+  /*
+   * The bar hugs its text: text height plus a little breathing room. The row
+   * pitch is that bar plus a quarter of itself, so a short list reads as a
+   * list. Dividing the content height among the rows instead (the old rule)
+   * spread four entries half a metre apart on the tall panel. Only a list too
+   * tall for the content area falls back to an even distribution, which then
+   * also caps the bar.
+   */
+  mGfxRowBarH = SfbGfxTextHeight (mGfxScaleRow) + 2 * (mGfxScaleRow + 1) * 3;
+  Slot        = mGfxRowBarH + mGfxRowBarH / 4;
+
+  MaxSlot = (mGfxContentBottom - mGfxContentTop) /
+            (mGfxRowLimit == 0 ? SFB_VISIBLE_ROWS : mGfxRowLimit);
+  if (Slot > MaxSlot) {
+    Slot = MaxSlot;
+  }
+
   if (Slot < SfbGfxTextHeight (1) + 2) {
     return FALSE;
   }
-
-  mGfxRowSlot = Slot;
-  /*
-   * The bar hugs its text. It used to be text height plus a fifth of the slot,
-   * which on this panel drew a 79 px bar around 38 px of text and made every
-   * row look like a wide empty band.
-   */
-  mGfxRowBarH = SfbGfxTextHeight (mGfxScaleRow) + 2 * (mGfxScaleRow + 1) * 3;
   if (mGfxRowBarH > Slot - mGfxPad / 2) {
     mGfxRowBarH = Slot - mGfxPad / 2;
   }
+
+  mGfxRowSlot = Slot;
   mGfxRowIndex = 0;
   mGfxUi = TRUE;
   return TRUE;
@@ -1017,9 +1027,6 @@ SfbShowEnteringMenu (VOID)
 
 /* ---- boot menu ---------------------------------------------------------- */
 
-/* Seconds the root menu waits for input before booting the default entry. */
-#define SFB_AUTO_BOOT_SECONDS  10
-
 STATIC
 VOID
 SfbDrawMenu (IN CONST SFB_MENU_STATE *Menu,
@@ -1189,20 +1196,151 @@ done:
   FreePool (Menu);
 }
 
+/*
+ * The wait-time settings screen: two numbers changed with the same three keys
+ * as the menu. Values wrap around inside their ranges, and the ESP store is
+ * written only on save (Power while editing), so browsing never touches the
+ * partition. A read-only ESP reports the failed save and keeps the new value
+ * in RAM for the rest of the session.
+ */
+STATIC
+VOID
+SfbDrawSettings (IN CONST SFB_SETTINGS *Settings,
+                 IN UINTN              Cursor,
+                 IN BOOLEAN            Editing)
+{
+  CHAR16  Text[96];
+
+  SfbBeginScreen (L"Settings", NULL);
+
+  mGfxRowLimit = 3;
+  SfbGfxLayout ();
+  mGfxRowBase = ((mGfxContentBottom - mGfxContentTop) -
+                 (3 * mGfxRowSlot)) / 2;
+
+  if (Editing && Cursor == 0) {
+    UnicodeSPrint (Text, sizeof (Text), L"Auto boot timeout: [%u] s",
+                   Settings->AutoBootSeconds);
+  } else {
+    UnicodeSPrint (Text, sizeof (Text),
+                   L"Auto boot timeout: %u s   (0 = never)",
+                   Settings->AutoBootSeconds);
+  }
+  SfbDrawRow (Cursor == 0, L" ", Text);
+
+  if (Editing && Cursor == 1) {
+    UnicodeSPrint (Text, sizeof (Text), L"Volume-up wait: [%u] ms",
+                   Settings->VolWaitMs);
+  } else {
+    UnicodeSPrint (Text, sizeof (Text), L"Volume-up wait: %u ms",
+                   Settings->VolWaitMs);
+  }
+  SfbDrawRow (Cursor == 1, L" ", Text);
+
+  SfbDrawRow (Cursor == 2, L" ", L"Back");
+
+  if (Editing) {
+    SfbEndScreen (L"Up/Down: change   Power: save");
+  } else {
+    SfbEndScreen (L"Up/Down: move   Power: edit");
+  }
+}
+
+STATIC
+VOID
+SfbRunSettings (VOID)
+{
+  SFB_SETTINGS  Settings;
+  UINTN         Cursor = 0;
+  BOOLEAN       Editing = FALSE;
+  SFB_KEY       Key;
+  EFI_STATUS    Status;
+
+  SfbSettingsLoad (&Settings);
+
+  while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
+
+    SfbDrawSettings (&Settings, Cursor, Editing);
+
+    Key = SfbWaitForKey (0);
+    if (Key == SfbKeyTimeout) {
+      continue;
+    }
+
+    /* While editing, Up/Down adjust the selected value with wrap-around. */
+    if ((Key == SfbKeyUp || Key == SfbKeyDown) && Editing) {
+      if (Cursor == 0) {
+        if (Key == SfbKeyUp) {
+          Settings.AutoBootSeconds =
+            (Settings.AutoBootSeconds >= SFB_AUTO_BOOT_MAX) ? 0
+            : Settings.AutoBootSeconds + 1;
+        } else {
+          Settings.AutoBootSeconds =
+            (Settings.AutoBootSeconds == 0) ? SFB_AUTO_BOOT_MAX
+            : Settings.AutoBootSeconds - 1;
+        }
+      } else {
+        if (Key == SfbKeyUp) {
+          Settings.VolWaitMs =
+            (Settings.VolWaitMs >= SFB_VOL_WAIT_MAX_MS)
+            ? SFB_VOL_WAIT_MIN_MS
+            : Settings.VolWaitMs + SFB_VOL_WAIT_STEP_MS;
+        } else {
+          Settings.VolWaitMs =
+            (Settings.VolWaitMs <= SFB_VOL_WAIT_MIN_MS)
+            ? SFB_VOL_WAIT_MAX_MS
+            : Settings.VolWaitMs - SFB_VOL_WAIT_STEP_MS;
+        }
+      }
+      continue;
+    }
+
+    if (Key == SfbKeyUp || Key == SfbKeyDown) {
+      SfbMoveCursor (&Cursor, 3, Key);
+      continue;
+    }
+
+    if (Key != SfbKeySelect) {
+      continue;
+    }
+
+    if (Editing) {
+      Editing = FALSE;
+      Status = SfbSettingsSave (&Settings);
+      if (EFI_ERROR (Status)) {
+        SfbReportStatus (L"Settings not saved", Status);
+      }
+      continue;
+    }
+
+    if (Cursor == 2) {
+      /* Back: return to the menu. */
+      return;
+    }
+    Editing = TRUE;
+  }
+}
+
 BOOLEAN
 SfbRunBootMenu (VOID)
 {
   SFB_MENU_STATE  Menu;
+  SFB_SETTINGS    Settings;
   UINTN           Cursor = 0;
   BOOLEAN         Rebuild = TRUE;
   BOOLEAN         AutoBooted = FALSE;
   BOOLEAN         Draw = TRUE;
-  UINT32          Countdown = SFB_AUTO_BOOT_SECONDS;
+  UINT32          Countdown;
   SFB_KEY         Key;
   EFI_STATUS      Status;
 
   ZeroMem (&Menu, sizeof (Menu));
   Menu.DefaultIndex = SFB_NO_INDEX;
+
+  SfbSettingsLoad (&Settings);
+  Countdown = Settings.AutoBootSeconds;
 
   while (TRUE) {
     /* Five minutes without any key: reset the handset (spec §5). */
@@ -1244,7 +1382,7 @@ SfbRunBootMenu (VOID)
 
         AutoBooted = TRUE;
         DEBUG ((EFI_D_INFO, "SFB: auto-boot '%s' after %u s idle\n",
-                Menu.Entry[Idle].Desc, (UINT32)SFB_AUTO_BOOT_SECONDS));
+                Menu.Entry[Idle].Desc, Settings.AutoBootSeconds));
         Status = SfbLaunchEntry (&Menu.Entry[Idle], FALSE, TRUE);
         if (EFI_ERROR (Status)) {
           SfbReportStatus (L"Boot failed", Status);
@@ -1281,6 +1419,14 @@ SfbRunBootMenu (VOID)
       SfbRunFileBrowser ();
       /* The browser may have added a custom entry. */
       Rebuild = TRUE;
+      break;
+
+    case SfbEntrySettings:
+      SfbRunSettings ();
+      /* The user is driving the menu, so auto-boot stays cancelled; only pick
+         up the new wait-time values. */
+      SfbSettingsLoad (&Settings);
+      Draw = TRUE;
       break;
 
     case SfbEntrySubmenu:

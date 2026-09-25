@@ -1,9 +1,10 @@
 /*
  * Boot entry list, persistence and launching for the super-fastboot boot menu.
  *
- * Two records in the ESP tail store back the menu (see SuperFbStore.c):
- *   slot SFB_STORE_DEFAULT - the entry the 5 second timeout launches
- *   slot SFB_STORE_CUSTOM  - the single user-added entry, from the file browser
+ * Three records in the ESP tail store back the menu (see SuperFbStore.c):
+ *   slot SFB_STORE_SETTINGS - the wait-time settings (menu countdown, vol-up)
+ *   slot SFB_STORE_DEFAULT  - the entry the menu timeout launches
+ *   slot SFB_STORE_CUSTOM   - the single user-added entry, from the file browser
  *
  * Copyright (c) 2026, contributors to the canoe ABL tree.
  * SPDX-License-Identifier: BSD-3-Clause
@@ -792,6 +793,7 @@ SfbBuildMenu (OUT SFB_MENU_STATE *Menu)
 
   SfbAppendBuiltIn (Menu, SfbEntryFastboot, L"Enter Fastboot");
   SfbAppendBuiltIn (Menu, SfbEntrySelector, L"Enter EFI Program Selector");
+  SfbAppendBuiltIn (Menu, SfbEntrySettings, L"Settings");
   SfbAppendBuiltIn (Menu, SfbEntryPowerOff, L"Power Off");
   SfbAppendBuiltIn (Menu, SfbEntryRestart, L"Restart");
 

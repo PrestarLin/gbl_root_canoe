@@ -2,12 +2,18 @@
  * Persistent settings for the super-fastboot boot menu.
  *
  * The firmware refuses EFI variables it does not already know about, so the
- * menu keeps its two settings in the EFI System Partition instead. Only the
- * last megabyte of that partition is safe to write, so the store sits at the
- * very end of it: two 1 KiB NUL-padded ASCII records, back to back, ending on
- * the partition's last byte.
+ * menu keeps its records in the EFI System Partition instead. Only the last
+ * megabyte of that partition is safe to write, so the store sits at the very
+ * end of it: 1 KiB NUL-padded ASCII records, back to back, ending on the
+ * partition's last byte.
  *
- *   [ ... file system ... | 1 MiB scratch ... | rec 0 | rec 1 ] end of ESP
+ *   [ ... file system ... | 1 MiB scratch ... | set | def | cust ] end of ESP
+ *
+ * The region starts SFB_STORE_BYTES before the partition end, so growing it
+ * (two slots to three) moves the start forwards into the scratch megabyte and
+ * leaves the older records at their old offsets: they land exactly in the new
+ * slot numbering, default = 1 and custom = 2, while slot 0 is fresh space for
+ * the settings record.
  *
  * Nothing here goes through the file system: the records must survive the ESP
  * being written by an operating system that knows nothing about them, and a
@@ -23,6 +29,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 #include <Guid/Gpt.h>
@@ -496,3 +503,67 @@ SfbStoreWrite (IN UINTN Slot, IN CONST CHAR8 *Text)
   return Status;
 }
 
+/* ---- wait-time settings ------------------------------------------------- */
+
+#define SFB_SETTINGS_TAG  "SFBSET1"
+
+STATIC
+UINT32
+SfbSettingsClamp (IN UINT32 Value,
+                  IN UINT32 Min,
+                  IN UINT32 Max,
+                  IN UINT32 Fallback)
+{
+  if (Value < Min || Value > Max) {
+    return Fallback;
+  }
+  return Value;
+}
+
+VOID
+SfbSettingsLoad (OUT SFB_SETTINGS *Settings)
+{
+  CHAR8        Record[SFB_STORE_SLOT_BYTES];
+  CONST CHAR8 *Cursor;
+
+  Settings->AutoBootSeconds = SFB_AUTO_BOOT_DEFAULT;
+  Settings->VolWaitMs       = SFB_VOL_WAIT_DEFAULT_MS;
+
+  if (EFI_ERROR (SfbStoreRead (SFB_STORE_SETTINGS, Record, sizeof (Record))) ||
+      Record[0] == '\0') {
+    return;
+  }
+
+  if (AsciiStrnCmp (Record, SFB_SETTINGS_TAG,
+                    AsciiStrLen (SFB_SETTINGS_TAG)) != 0) {
+    DEBUG ((EFI_D_ERROR, "SFB: settings slot is not a record\n"));
+    return;
+  }
+
+  Cursor = Record + AsciiStrLen (SFB_SETTINGS_TAG);
+  if (*Cursor == '|') {
+    Cursor++;
+  }
+  Settings->AutoBootSeconds =
+    SfbSettingsClamp (AsciiStrDecimalToUintn (Cursor), 0, SFB_AUTO_BOOT_MAX,
+                      SFB_AUTO_BOOT_DEFAULT);
+
+  Cursor = AsciiStrStr (Cursor, "|");
+  if (Cursor == NULL) {
+    return;
+  }
+  Settings->VolWaitMs =
+    SfbSettingsClamp (AsciiStrDecimalToUintn (Cursor + 1),
+                      SFB_VOL_WAIT_MIN_MS, SFB_VOL_WAIT_MAX_MS,
+                      SFB_VOL_WAIT_DEFAULT_MS);
+}
+
+EFI_STATUS
+SfbSettingsSave (IN CONST SFB_SETTINGS *Settings)
+{
+  CHAR8  Record[SFB_STORE_SLOT_BYTES];
+
+  AsciiSPrint (Record, sizeof (Record), "%a|%u|%u", SFB_SETTINGS_TAG,
+               Settings->AutoBootSeconds, Settings->VolWaitMs);
+  return SfbStoreWrite (SFB_STORE_SETTINGS, Record);
+}

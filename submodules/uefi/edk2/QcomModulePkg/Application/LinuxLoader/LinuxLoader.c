@@ -288,19 +288,26 @@ LinuxLoaderEntry (IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
   }
 
   {
-    UINT8  MenuRequested;
+    SFB_SETTINGS  Settings;
+    UINT8         MenuRequested;
+
+    /*
+     * The wait-time settings live in the ESP tail store, which is raw block
+     * I/O: readable before the FAT stack comes up, so the power-on volume-up
+     * window can already honour them.
+     */
+    SfbSettingsLoad (&Settings);
 
     /*
      * Scan for Volume Up held at power-on FIRST, before any other init disturbs
      * the console input. WaitForVolumeUpKey flushes stale input and then waits
      * for a genuine Volume Up press, skipping every other key (notably the
      * power key used to switch the device on) rather than being fooled by it.
-     * Volume Up (the official recovery key slot) opens the boot menu; no Volume
-     * Up within the window launches the saved default entry.
+     * Volume Up (the official recovery key slot) opens the boot menu; without
+     * it the handset simply boots the saved default entry, with no menu.
      */
-    MenuRequested = WaitForVolumeUpKey (1000);
-    DEBUG ((EFI_D_INFO,
-            "SFB: power-on volume-up detected=%u (menu is always shown)\n",
+    MenuRequested = WaitForVolumeUpKey (Settings.VolWaitMs);
+    DEBUG ((EFI_D_INFO, "SFB: power-on volume-up detected=%u\n",
             MenuRequested));
 
     /*
@@ -314,13 +321,41 @@ LinuxLoaderEntry (IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
     }
 
 
+    if (!MenuRequested) {
+      SFB_MENU_STATE  *Menu;
+
+      /*
+       * Simply switched on: launch the saved default entry directly - no menu,
+       * no banner over the boot splash. A missing default, or a launch that
+       * comes back failed, reports why and falls through to the menu below, so
+       * a bad configuration never leaves a dead handset.
+       */
+      Status = EFI_NOT_FOUND;
+      Menu = AllocateZeroPool (sizeof (*Menu));
+      if (Menu != NULL) {
+        SfbBuildMenu (Menu);
+        if (Menu->DefaultIndex != SFB_NO_INDEX &&
+            Menu->DefaultIndex < Menu->Count) {
+          Status = SfbLaunchEntry (&Menu->Entry[Menu->DefaultIndex],
+                                   FALSE, FALSE);
+        }
+        SfbFreeMenu (Menu);
+        FreePool (Menu);
+      }
+
+      if (!EFI_ERROR (Status)) {
+        /* The image took over and control somehow came back. */
+        goto stack_guard_update_default;
+      }
+
+      SfbReportStatus (L"Default boot failed", Status);
+    }
+
     /*
-     * The menu is shown on every boot. It counts down for a few seconds and
-     * boots the saved default entry itself when no key is pressed, so an
-     * untouched handset still comes up while a key keeps the menu alive.
-     * Announce it and hold briefly so a volume key still held from power-on is
-     * released before the menu takes input. It only returns TRUE when the user
-     * picked fastboot.
+     * The menu opens on Volume Up (or after a failed default boot). Announce it
+     * and hold briefly so a volume key still held from power-on is released
+     * before the menu takes input. It only returns TRUE when the user picked
+     * fastboot.
      */
     SfbShowEnteringMenu ();
     if (!SfbRunBootMenu ()) {
