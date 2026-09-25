@@ -248,7 +248,7 @@ typedef struct {
 #define SFB_VOL_WAIT_DEFAULT_MS 1000
 #define SFB_VOL_WAIT_MIN_MS     200
 #define SFB_VOL_WAIT_MAX_MS     3000
-#define SFB_VOL_WAIT_STEP_MS    100
+#define SFB_VOL_WAIT_STEP_MS    500
 
 /* Load the stored settings, substituting defaults for missing/garbage data. */
 VOID
