@@ -398,6 +398,14 @@ SfbGfxInit (VOID)
   if (EFI_ERROR (Status) || ProbeHeight == 0) {
     DEBUG ((EFI_D_INFO, "SFB: gfx: font metrics unavailable (%r); text menu\n",
             Status));
+    if (mBack != NULL) {
+      FreePool (mBack);
+      mBack = NULL;
+    }
+    if (mScratch != NULL) {
+      FreePool (mScratch);
+      mScratch = NULL;
+    }
     mReady = FALSE;
     mGop   = NULL;
     mFont  = NULL;
