@@ -17,6 +17,7 @@ build:
 	fi
 	mkdir -p ./build
 	cp edk2/Build/RELEASE_CLANG35/AARCH64/LinuxLoader.efi ./build/BDS.efi
+	cp edk2/Build/RELEASE_CLANG35/AARCH64/SfbKernelBoot.efi ./build/SfbKernelBoot.efi
 	@echo "BDS built successfully: build/BDS.efi"
 
 # Build the standalone AndroidToolsPkg applications (RebootTools, ArbTools,
