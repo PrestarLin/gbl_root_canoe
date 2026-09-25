@@ -312,3 +312,10 @@
 			StackCanary|QcomModulePkg/Library/StackCanary/StackCanary.inf
 			FastbootLib|QcomModulePkg/Library/FastbootLib/FastbootLib.inf
 	}
+
+	# Also not placed in the FV. Starts a Linux kernel the way ABL does, which
+	# needs the cache and MMU primitives LinuxLoader does not use.
+	QcomModulePkg/Application/SfbKernelBoot/SfbKernelBoot.inf {
+		<LibraryClasses>
+			StackCanary|QcomModulePkg/Library/StackCanary/StackCanary.inf
+	}

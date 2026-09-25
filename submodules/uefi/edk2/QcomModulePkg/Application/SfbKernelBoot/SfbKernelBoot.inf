@@ -1,0 +1,60 @@
+#/* @file
+#  Start a Linux kernel the way ABL does: exit boot services, quiesce the
+#  machine, branch with the device tree in x0.
+#
+#  A standalone EFI application rather than a module inside LinuxLoader, for the
+#  same reason MuChain is: the BDS image volume has only 16 bytes free, and a
+#  separate file can be replaced on the boot volume without reflashing.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#*/
+
+[Defines]
+  INF_VERSION                    = 0x00010006
+  BASE_NAME                      = SfbKernelBoot
+  FILE_GUID                      = 2f8a41c7-6d3e-4b95-8a17-5c9e0d6b4f23
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = SfbKernelBootEntry
+
+[Sources]
+  SfbKernelBoot.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
+  # For gEfiPartitionRecordGuid, the GPT entry the platform publishes per
+  # partition. The BDS uses the same GUID to find its logfs volume.
+  QcomModulePkg/QcomModulePkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  BaseMemoryLib
+  CacheMaintenanceLib
+  DebugLib
+  MemoryAllocationLib
+  PrintLib
+  # The package builds with -fstack-protector-all, so these two symbols have to
+  # come from somewhere; LinuxLoader and MuChain link the same library.
+  StackCanary
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  # Block I/O is what the search enumerates.
+  gEfiBlockIoProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  # Carries EFI_PARTITION_ENTRY, whose PartitionName identifies the volume.
+  # Declared under [Protocols] in QcomModulePkg.dec despite the name.
+  gEfiPartitionRecordGuid
+  # Only the handoff canary uses this: the frame buffer it draws to.
+  gEfiGraphicsOutputProtocolGuid
+
+[Guids]
+  gEfiFileInfoGuid
+
+[Depex]
+  TRUE
