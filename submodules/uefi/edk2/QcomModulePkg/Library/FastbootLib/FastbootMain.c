@@ -424,29 +424,123 @@ typedef enum {
   FbActionRestart
 } FB_ACTION;
 
+/* Console geometry fallback when QueryMode rejects the active mode. */
+#define FB_FALLBACK_COLUMNS  80
+#define FB_FALLBACK_ROWS     25
+
+STATIC
+VOID
+FbGetScreen (
+  OUT UINTN  *Columns,
+  OUT UINTN  *Rows
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = gST->ConOut->QueryMode (
+                          gST->ConOut,
+                          (UINTN)gST->ConOut->Mode->Mode,
+                          Columns,
+                          Rows
+                          );
+  if (EFI_ERROR (Status) || *Columns == 0 || *Rows == 0) {
+    *Columns = FB_FALLBACK_COLUMNS;
+    *Rows    = FB_FALLBACK_ROWS;
+  }
+}
+
+STATIC
+UINTN
+FbRows (
+  VOID
+  )
+{
+  UINTN  Columns;
+  UINTN  Rows;
+
+  FbGetScreen (&Columns, &Rows);
+  return Rows;
+}
+
+/*
+ * Print Text on Row with its left edge shifted so the string lands centred in
+ * the current text mode, rendered in Attribute. A row past the last line of
+ * the mode is dropped instead of scrolling the screen.
+ */
+STATIC
+VOID
+FbPrintCenteredLine (
+  IN UINTN         Row,
+  IN CONST CHAR16  *Text,
+  IN UINTN         Attribute
+  )
+{
+  UINTN  Columns;
+  UINTN  Rows;
+  UINTN  Col;
+  UINTN  Len;
+
+  FbGetScreen (&Columns, &Rows);
+  if (Row >= Rows) {
+    return;
+  }
+
+  for (Len = 0; Text[Len] != L'\0'; Len++) {
+  }
+
+  Col = (Columns > Len) ? (Columns - Len) / 2 : 0;
+
+  gST->ConOut->SetAttribute (gST->ConOut, Attribute);
+  gST->ConOut->SetCursorPosition (gST->ConOut, Col, Row);
+  gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)Text);
+}
+
 STATIC
 VOID
 FastbootDrawModeScreen (VOID)
 {
-  UINTN  Index;
+  UINTN   Rows;
+  UINTN   Top;
+  UINTN   Row;
+  UINTN   Index;
+  UINTN   Len;
+  CHAR16  Line[64];
 
   gST->ConOut->SetAttribute (gST->ConOut, FB_ATTR_TITLE);
   gST->ConOut->ClearScreen (gST->ConOut);
   gST->ConOut->EnableCursor (gST->ConOut, FALSE);
 
-  Print (L"FASTBOOT MODE\r\n\r\n");
+  Rows = FbRows ();
+
+  /* Title, blank, action rows, blank, hint. */
+  Top = FB_ACTION_ROWS + 4;
+  Top = (Rows > Top) ? (Rows - Top) / 2 : 0;
+
+  Row = Top;
+  FbPrintCenteredLine (Row, L"FASTBOOT MODE", FB_ATTR_TITLE);
+  Row += 2;
 
   for (Index = 0; Index < FB_ACTION_ROWS; Index++) {
-    gST->ConOut->SetAttribute (gST->ConOut,
-                               (Index == mFbActionCursor) ? FB_ATTR_SELECTED
-                                                           : FB_ATTR_NORMAL);
-    Print (L"%s %s\r\n",
-           (Index == mFbActionCursor) ? L">" : L" ",
-           mFbActionRow[Index]);
+    Line[0] = (Index == mFbActionCursor) ? L'>' : L' ';
+    Line[1] = L' ';
+    for (Len = 0; Len < 60 && mFbActionRow[Index][Len] != L'\0'; Len++) {
+      Line[2 + Len] = mFbActionRow[Index][Len];
+    }
+
+    Line[2 + Len] = L'\0';
+    FbPrintCenteredLine (
+      Row++,
+      Line,
+      (Index == mFbActionCursor) ? FB_ATTR_SELECTED : FB_ATTR_NORMAL
+      );
   }
 
-  gST->ConOut->SetAttribute (gST->ConOut, FB_ATTR_NORMAL);
-  Print (L"\r\nVol Up/Down: move   Power: select\r\n");
+  Row++;
+  FbPrintCenteredLine (
+        Row,
+        L"Vol Up/Down: move   Power: select",
+        FB_ATTR_NORMAL
+        );
 }
 
 STATIC
@@ -457,9 +551,7 @@ FastbootShowActionScreen (IN CONST CHAR16 *Text)
   gST->ConOut->ClearScreen (gST->ConOut);
   gST->ConOut->EnableCursor (gST->ConOut, FALSE);
 
-  Print (L"%s\r\n", Text);
-
-  gST->ConOut->SetAttribute (gST->ConOut, FB_ATTR_NORMAL);
+  FbPrintCenteredLine (FbRows () / 2, Text, FB_ATTR_TITLE);
 }
 
 /*

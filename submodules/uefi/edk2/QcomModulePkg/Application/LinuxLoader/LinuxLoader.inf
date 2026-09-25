@@ -166,6 +166,9 @@
 	gEfiPartitionRecordGuid
 	gEfiResetReasonProtocolGuid
 	gQcomRngProtocolGuid
+	# Scaled boot-menu text: GOP blits, HII renders the glyphs.
+	gEfiGraphicsOutputProtocolGuid
+	gEfiHiiFontProtocolGuid
 	# Patched around FAT32 image launches so the boot menu can run unsigned
 	# loaders on an unlocked device.
 	gEfiSecurityArchProtocolGuid

@@ -356,6 +356,13 @@ SfbShowBootingScreen (IN CONST CHAR16 *Name,
                       IN CONST CHAR16 *FilePath,
                       IN BOOLEAN       ClearScreen);
 
+/*
+ * Format a status line the same way Print would, then draw it centered with
+ * the menu font and hold until the user acknowledges it.
+ */
+VOID
+SfbReportStatusFormat (IN CONST CHAR16 *What, IN EFI_STATUS Status);
+
 /* Wait for a key. TimeoutMs of 0 waits indefinitely. */
 SFB_KEY
 SfbWaitForKey (IN UINT32 TimeoutMs);
@@ -364,6 +371,11 @@ SfbWaitForKey (IN UINT32 TimeoutMs);
 
 /* Rows of list content a screen shows before it starts scrolling. */
 #define SFB_VISIBLE_ROWS  12
+
+/* Text attributes the drawing helpers understand (EFI_TEXT_ATTR(fg, bg)). */
+#define SFB_ATTR_NORMAL    EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK)
+#define SFB_ATTR_SELECTED  EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY)
+#define SFB_ATTR_TITLE     EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK)
 
 VOID
 SfbBeginScreen (IN CONST CHAR16 *Title, IN CONST CHAR16 *Subtitle OPTIONAL);
@@ -375,6 +387,13 @@ VOID
 SfbDrawRow (IN BOOLEAN      Selected,
             IN CONST CHAR16 *Marker,
             IN CONST CHAR16 *Text);
+
+/*
+ * Draw one centered line with the same scaled font as the menu and advance
+ * the pen. Attribute uses the usual EFI_TEXT_ATTR (fg, bg) encoding.
+ */
+VOID
+SfbPrintCentered (IN CONST CHAR16 *Text, IN UINTN Attribute);
 
 /* First row of the visible window, chosen to keep Cursor inside it. */
 UINTN

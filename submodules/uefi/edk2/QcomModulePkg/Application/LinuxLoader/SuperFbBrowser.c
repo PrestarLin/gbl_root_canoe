@@ -488,11 +488,19 @@ SfbBrowseVolume (IN EFI_HANDLE   Volume,
     }
 
     if (Last < Count) {
-      Print (L"    ... %u more\r\n", (UINT32)(Count - Last));
+      CHAR16  More[64];
+
+      UnicodeSPrint (More, sizeof (More), L"... %u more",
+                     (UINT32)(Count - Last));
+      SfbPrintCentered (More, SFB_ATTR_NORMAL);
     }
     if (Truncated) {
-      Print (L"    (directory has more than %u entries; rest not shown)\r\n",
-             (UINT32)SFB_MAX_DIR_ENTRIES);
+      CHAR16  More[96];
+
+      UnicodeSPrint (More, sizeof (More),
+                     L"(directory has more than %u entries; rest not shown)",
+                     (UINT32)SFB_MAX_DIR_ENTRIES);
+      SfbPrintCentered (More, SFB_ATTR_NORMAL);
     }
 
     SfbEndScreen (L"Vol Up/Down: move   Power: open");
@@ -639,7 +647,11 @@ SfbRunFileBrowser (VOID)
     }
 
     if (Last < RowCount) {
-      Print (L"    ... %u more\r\n", (UINT32)(RowCount - Last));
+      CHAR16  More[64];
+
+      UnicodeSPrint (More, sizeof (More), L"... %u more",
+                     (UINT32)(RowCount - Last));
+      SfbPrintCentered (More, SFB_ATTR_NORMAL);
     }
 
     SfbEndScreen (L"Vol Up/Down: move   Power: select");

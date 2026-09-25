@@ -18,14 +18,12 @@
 #include <Library/ShutdownServices.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
+/* HiiFont.h also pulls in GraphicsOutput.h and HiiImage.h. */
+#include <Protocol/HiiFont.h>
 #include <Protocol/SimpleTextIn.h>
 
 /* Keeps the translation unit legal when the feature is compiled out. */
 CONST CHAR8 *gSfbMenuModuleTag = "SuperFbMenu";
-
-#define SFB_ATTR_NORMAL    EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK)
-#define SFB_ATTR_SELECTED  EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY)
-#define SFB_ATTR_TITLE     EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK)
 
 SFB_KEY
 SfbWaitForKey (IN UINT32 TimeoutMs)
@@ -129,34 +127,425 @@ SfbStrCaseEqual (IN CONST CHAR16 *Str1, IN CONST CHAR16 *Str2)
   return *Str1 == L'\0' && *Str2 == L'\0';
 }
 
+/* ---- scaled text renderer ------------------------------------------------ */
+
+/*
+ * The UEFI text console draws glyphs at a fixed 8x19 pixels and never scales
+ * them, which is unreadably small on the handset panel. The menu therefore
+ * paints its own text: the HII font protocol renders one line at native size
+ * into an offscreen bitmap, the bitmap is enlarged by an integer scale factor
+ * with nearest-neighbour sampling, and the result reaches the display in a
+ * single GOP blit. Every line is centred horizontally and the selected row
+ * sits on a highlight bar. When GOP or the HII font protocol is missing the
+ * same drawing falls back to ConOut, centred by cursor position instead.
+ */
+
+/* Longest line the renderer keeps; the stack buffers are sized from this. */
+#define SFB_MAX_RENDER_CHARS  128
+/* Glyph scale bounds: 16x38 px at 2x, 24x57 px at 3x. */
+#define SFB_MAX_SCALE         3
+/* A 48-character description plus its "> * " prefix must stay on one row. */
+#define SFB_MIN_COLUMNS       52
+/* Lines (title, subtitle, blank, rows, footer) that must fit in most of the
+ * screen height at the chosen scale. */
+#define SFB_LAYOUT_LINES      16
+
+/* Console attribute colours, ordered blue-green-red like GraphicsConsole. */
+STATIC CONST EFI_GRAPHICS_OUTPUT_BLT_PIXEL  mSfbColors[16] = {
+  {0x00, 0x00, 0x00, 0x00},  /*  0: black      */
+  {0x98, 0x00, 0x00, 0x00},  /*  1: lightblue  */
+  {0x00, 0x98, 0x00, 0x00},  /*  2: lightgreen */
+  {0x98, 0x98, 0x00, 0x00},  /*  3: lightcyan  */
+  {0x00, 0x00, 0x98, 0x00},  /*  4: lightred   */
+  {0x98, 0x00, 0x98, 0x00},  /*  5: magenta    */
+  {0x00, 0x98, 0x98, 0x00},  /*  6: brown      */
+  {0x98, 0x98, 0x98, 0x00},  /*  7: lightgray  */
+  {0x30, 0x30, 0x30, 0x00},  /*  8: darkgray   */
+  {0xff, 0x00, 0x00, 0x00},  /*  9: blue       */
+  {0x00, 0xff, 0x00, 0x00},  /* 10: lime       */
+  {0xff, 0xff, 0x00, 0x00},  /* 11: cyan       */
+  {0x00, 0x00, 0xff, 0x00},  /* 12: red        */
+  {0xff, 0x00, 0xff, 0x00},  /* 13: fuchsia    */
+  {0x00, 0xff, 0xff, 0x00},  /* 14: yellow     */
+  {0xff, 0xff, 0xff, 0x00}   /* 15: white      */
+};
+
+STATIC BOOLEAN                        mSfbInited    = FALSE;
+STATIC BOOLEAN                        mSfbGfx       = FALSE;
+STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL   *mSfbGop      = NULL;
+STATIC EFI_HII_FONT_PROTOCOL          *mSfbHiiFont  = NULL;
+STATIC UINT32                         mSfbScreenW   = 0;
+STATIC UINT32                         mSfbScreenH   = 0;
+STATIC UINTN                          mSfbScale     = 1;
+STATIC UINTN                          mSfbLineHeight = 0;
+STATIC UINTN                          mSfbMaxChars  = 0;
+STATIC UINTN                          mSfbPenY      = 0;
+STATIC UINTN                          mSfbConCols   = 0;
+STATIC UINTN                          mSfbConRows   = 0;
+STATIC UINTN                          mSfbConRow    = 0;
+
+/*
+ * Locate GOP and the HII font protocol once, then fix the screen geometry:
+ * the glyph scale, the line pitch, and the longest line that still fits.
+ */
+STATIC VOID
+SfbTextInit (VOID)
+{
+  EFI_STATUS  Status;
+  UINTN       Scale;
+
+  if (mSfbInited) {
+    return;
+  }
+  mSfbInited = TRUE;
+
+  mSfbGop = NULL;
+  Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL,
+                                (VOID **)&mSfbGop);
+  if (EFI_ERROR (Status)) {
+    mSfbGop = NULL;
+  }
+  mSfbHiiFont = NULL;
+  Status = gBS->LocateProtocol (&gEfiHiiFontProtocolGuid, NULL,
+                                (VOID **)&mSfbHiiFont);
+  if (EFI_ERROR (Status)) {
+    mSfbHiiFont = NULL;
+  }
+
+  mSfbGfx = FALSE;
+  if (mSfbGop != NULL && mSfbHiiFont != NULL &&
+      mSfbGop->Mode != NULL && mSfbGop->Mode->Info != NULL) {
+    mSfbScreenW = mSfbGop->Mode->Info->HorizontalResolution;
+    mSfbScreenH = mSfbGop->Mode->Info->VerticalResolution;
+    if (mSfbScreenW >= 640 && mSfbScreenH >= 480) {
+      mSfbGfx = TRUE;
+    }
+  }
+
+  if (mSfbGfx) {
+    /*
+     * Start at the largest scale and step down while the screen is too narrow
+     * to keep whole descriptions on one row, or too short to hold the layout.
+     */
+    Scale = SFB_MAX_SCALE;
+    while (Scale > 1 &&
+           ((mSfbScreenW - mSfbScreenW / 10) / (EFI_GLYPH_WIDTH * Scale) <
+              SFB_MIN_COLUMNS ||
+            SFB_LAYOUT_LINES * (EFI_GLYPH_HEIGHT + 4) * Scale >
+              mSfbScreenH * 3 / 4)) {
+      Scale--;
+    }
+
+    mSfbScale      = Scale;
+    mSfbLineHeight = (EFI_GLYPH_HEIGHT + 4) * Scale;
+    mSfbMaxChars   = (mSfbScreenW - mSfbScreenW / 10) /
+                     (EFI_GLYPH_WIDTH * Scale);
+    if (mSfbMaxChars > SFB_MAX_RENDER_CHARS) {
+      mSfbMaxChars = SFB_MAX_RENDER_CHARS;
+    }
+    if (mSfbMaxChars < 16) {
+      mSfbMaxChars = 16;
+    }
+    return;
+  }
+
+  /* ConOut fallback: centre inside the text-mode grid instead. */
+  if (gST->ConOut->QueryMode (gST->ConOut, gST->ConOut->Mode->Mode,
+                              &mSfbConCols, &mSfbConRows) != EFI_SUCCESS ||
+      mSfbConCols == 0 || mSfbConRows == 0) {
+    mSfbConCols = 80;
+    mSfbConRows = 25;
+  }
+  if (mSfbConCols > SFB_MAX_RENDER_CHARS) {
+    mSfbConCols = SFB_MAX_RENDER_CHARS;
+  }
+  mSfbMaxChars = mSfbConCols;
+}
+
+/* Copy Text to Out, cut to MaxChars with an ellipsis, return its length. */
+STATIC UINTN
+SfbTruncate (IN CONST CHAR16 *Text, IN UINTN MaxChars, OUT CHAR16 *Out)
+{
+  UINTN  Len;
+
+  Len = StrLen (Text);
+  if (Len <= MaxChars) {
+    CopyMem (Out, Text, (Len + 1) * sizeof (CHAR16));
+    return Len;
+  }
+
+  if (MaxChars > 3) {
+    CopyMem (Out, Text, (MaxChars - 3) * sizeof (CHAR16));
+    Out[MaxChars - 3] = L'.';
+    Out[MaxChars - 2] = L'.';
+    Out[MaxChars - 1] = L'.';
+    Out[MaxChars] = L'\0';
+    return MaxChars;
+  }
+
+  CopyMem (Out, Text, MaxChars * sizeof (CHAR16));
+  Out[MaxChars] = L'\0';
+  return MaxChars;
+}
+
+/* Blank the screen and park the pen on the first line. */
+STATIC VOID
+SfbClearScreen (VOID)
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Black = {0x00, 0x00, 0x00, 0x00};
+
+  SfbTextInit ();
+  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+
+  if (mSfbGfx) {
+    mSfbGop->Blt (mSfbGop, &Black, EfiBltVideoFill, 0, 0, 0, 0,
+                  mSfbScreenW, mSfbScreenH, 0);
+    mSfbPenY = mSfbScreenH / 8;
+  } else {
+    gST->ConOut->ClearScreen (gST->ConOut);
+    mSfbConRow = 0;
+  }
+}
+
+/* Centre a Lines-tall block vertically on the current screen. */
+STATIC VOID
+SfbCenterPen (IN UINTN Lines)
+{
+  UINTN  Block;
+
+  SfbTextInit ();
+  if (mSfbGfx) {
+    Block = Lines * mSfbLineHeight;
+    mSfbPenY = (mSfbScreenH > Block) ? (mSfbScreenH - Block) / 2 : 0;
+  } else {
+    mSfbConRow = (mSfbConRows > Lines) ? (mSfbConRows - Lines) / 2 : 0;
+  }
+}
+
+/* ConOut fallback: one centred line on the next console row. */
+STATIC VOID
+SfbConCenteredLine (IN CONST CHAR16 *Text, IN UINTN Attribute)
+{
+  CHAR16  Line[SFB_MAX_RENDER_CHARS + 1];
+  UINTN   Len;
+  UINTN   Column;
+
+  if (mSfbConRow >= mSfbConRows) {
+    return;
+  }
+
+  Len = SfbTruncate (Text, mSfbMaxChars, Line);
+  Column = (mSfbConCols > Len) ? (mSfbConCols - Len) / 2 : 0;
+
+  gST->ConOut->SetAttribute (gST->ConOut, Attribute);
+  if (!EFI_ERROR (gST->ConOut->SetCursorPosition (gST->ConOut, Column,
+                                                  mSfbConRow))) {
+    gST->ConOut->OutputString (gST->ConOut, Line);
+  }
+  mSfbConRow++;
+}
+
+/*
+ * One centred line through the scaled renderer: HII paints the glyphs into an
+ * offscreen bitmap, the bitmap is enlarged, and the result is blitted once.
+ */
+STATIC VOID
+SfbGfxCenteredLine (IN CONST CHAR16 *Text, IN UINTN Attribute)
+{
+  EFI_STATUS                     Status;
+  CHAR16                         Line[SFB_MAX_RENDER_CHARS + 1];
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Bitmap = NULL;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Scaled = NULL;
+  EFI_FONT_DISPLAY_INFO          *FontInfo = NULL;
+  EFI_HII_ROW_INFO               *RowInfo = NULL;
+  UINTN                          RowCount = 0;
+  EFI_IMAGE_OUTPUT               Image;
+  EFI_IMAGE_OUTPUT               *ImagePtr;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Foreground;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Background;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *SourceRow;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *TargetRow;
+  UINTN                          Len;
+  UINTN                          SourceWidth;
+  UINTN                          RowWidth;
+  UINTN                          RowHeight;
+  UINTN                          ScaledWidth;
+  UINTN                          ScaledHeight;
+  UINTN                          LineX;
+  UINTN                          BarWidth;
+  UINTN                          X;
+  UINTN                          Y;
+
+  if (mSfbPenY >= mSfbScreenH) {
+    return;
+  }
+
+  Len = SfbTruncate (Text, mSfbMaxChars, Line);
+  if (Len == 0) {
+    /* Blank separator line: just move the pen down. */
+    mSfbPenY += mSfbLineHeight;
+    return;
+  }
+
+  Foreground = mSfbColors[Attribute & 0x0f];
+  Background = mSfbColors[(Attribute >> 4) & 0x0f];
+
+  SourceWidth = (Len + 2) * EFI_GLYPH_WIDTH;
+  Bitmap = AllocatePool (SourceWidth * EFI_GLYPH_HEIGHT *
+                         sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+  if (Bitmap == NULL) {
+    mSfbPenY += mSfbLineHeight;
+    return;
+  }
+
+  /* Pre-fill with the background so no stale pixels survive the blit. */
+  for (X = 0; X < SourceWidth * EFI_GLYPH_HEIGHT; X++) {
+    Bitmap[X] = Background;
+  }
+
+  FontInfo = AllocateZeroPool (sizeof (*FontInfo));
+  if (FontInfo == NULL) {
+    goto Advance;
+  }
+  /*
+   * A zero mask with an empty name never matches a registered font, so HII
+   * falls back to the 19-row system font while keeping the colours set here,
+   * exactly like GraphicsConsole does for the console itself.
+   */
+  FontInfo->ForegroundColor = Foreground;
+  FontInfo->BackgroundColor = Background;
+
+  ZeroMem (&Image, sizeof (Image));
+  Image.Width         = (UINT16)SourceWidth;
+  Image.Height        = EFI_GLYPH_HEIGHT;
+  Image.Image.Bitmap  = Bitmap;
+  ImagePtr            = &Image;
+
+  Status = mSfbHiiFont->StringToImage (
+                          mSfbHiiFont,
+                          EFI_HII_IGNORE_IF_NO_GLYPH | EFI_HII_IGNORE_LINE_BREAK,
+                          Line, FontInfo, &ImagePtr, 0, 0,
+                          &RowInfo, &RowCount, NULL);
+  if (EFI_ERROR (Status) || RowInfo == NULL || RowCount == 0 ||
+      RowInfo[0].LineWidth == 0) {
+    goto Advance;
+  }
+
+  RowWidth  = RowInfo[0].LineWidth;
+  RowHeight = (RowInfo[0].LineHeight != 0) ? RowInfo[0].LineHeight
+                                           : EFI_GLYPH_HEIGHT;
+  ScaledWidth  = RowWidth * mSfbScale;
+  ScaledHeight = RowHeight * mSfbScale;
+  if (ScaledWidth > mSfbScreenW || mSfbPenY + ScaledHeight > mSfbScreenH) {
+    goto Advance;
+  }
+
+  Scaled = AllocatePool (ScaledWidth * ScaledHeight *
+                         sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+  if (Scaled == NULL) {
+    goto Advance;
+  }
+
+  /* Nearest-neighbour enlargement: every scaled pixel copies its source. */
+  for (Y = 0; Y < ScaledHeight; Y++) {
+    SourceRow = Bitmap + (Y / mSfbScale) * SourceWidth;
+    TargetRow = Scaled + Y * ScaledWidth;
+    for (X = 0; X < ScaledWidth; X++) {
+      TargetRow[X] = SourceRow[X / mSfbScale];
+    }
+  }
+
+  LineX = (mSfbScreenW - ScaledWidth) / 2;
+
+  /* Highlight bar behind a selected row: full text width, never the whole
+   * screen narrower than six tenths of it, clipped to the panel. */
+  if ((Attribute >> 4) != EFI_BLACK) {
+    BarWidth = ScaledWidth + 16 * mSfbScale;
+    if (BarWidth < mSfbScreenW * 6 / 10) {
+      BarWidth = mSfbScreenW * 6 / 10;
+    }
+    if (BarWidth > mSfbScreenW) {
+      BarWidth = mSfbScreenW;
+    }
+    mSfbGop->Blt (mSfbGop, &Background, EfiBltVideoFill, 0, 0,
+                  (mSfbScreenW - BarWidth) / 2, mSfbPenY,
+                  BarWidth, ScaledHeight, 0);
+  }
+
+  mSfbGop->Blt (mSfbGop, Scaled, EfiBltBufferToVideo, 0, 0, LineX, mSfbPenY,
+                ScaledWidth, ScaledHeight,
+                ScaledWidth * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+
+Advance:
+  mSfbPenY += mSfbLineHeight;
+  if (RowInfo != NULL) {
+    FreePool (RowInfo);
+  }
+  if (Scaled != NULL) {
+    FreePool (Scaled);
+  }
+  if (FontInfo != NULL) {
+    FreePool (FontInfo);
+  }
+  if (Bitmap != NULL) {
+    FreePool (Bitmap);
+  }
+}
+
+VOID
+SfbPrintCentered (IN CONST CHAR16 *Text, IN UINTN Attribute)
+{
+  if (Text == NULL) {
+    return;
+  }
+
+  SfbTextInit ();
+  if (mSfbGfx) {
+    SfbGfxCenteredLine (Text, Attribute);
+  } else {
+    SfbConCenteredLine (Text, Attribute);
+  }
+}
+
 VOID
 SfbBeginScreen (IN CONST CHAR16 *Title, IN CONST CHAR16 *Subtitle)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
-  gST->ConOut->ClearScreen (gST->ConOut);
-  Print (L"%s\r\n", Title);
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+  SfbClearScreen ();
+  SfbPrintCentered (Title, SFB_ATTR_TITLE);
   if (Subtitle != NULL) {
-    Print (L"%s\r\n", Subtitle);
+    SfbPrintCentered (Subtitle, SFB_ATTR_NORMAL);
   }
-  Print (L"\r\n");
+  SfbPrintCentered (L"", SFB_ATTR_NORMAL);
 }
 
 VOID
 SfbEndScreen (IN CONST CHAR16 *Footer)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
-  Print (L"\r\n%s\r\n", Footer);
+  UINTN  FooterY;
+
+  SfbTextInit ();
+  if (mSfbGfx) {
+    /* Pin the footer near the bottom so short menus still fill the screen. */
+    FooterY = mSfbScreenH - mSfbScreenH / 8 - mSfbLineHeight;
+    if (mSfbPenY < FooterY) {
+      mSfbPenY = FooterY;
+    }
+  } else {
+    /* Blank line, the way the old Print (L"\r\n%s\r\n") did. */
+    mSfbConRow++;
+  }
+
+  SfbPrintCentered (Footer, SFB_ATTR_NORMAL);
 }
 
 VOID
 SfbDrawRow (IN BOOLEAN Selected, IN CONST CHAR16 *Marker, IN CONST CHAR16 *Text)
 {
-  gST->ConOut->SetAttribute (gST->ConOut,
-                             Selected ? SFB_ATTR_SELECTED : SFB_ATTR_NORMAL);
-  Print (L"%s %s %s", Selected ? L">" : L" ", Marker, Text);
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
-  Print (L"\r\n");
+  CHAR16  Line[SFB_DESC_CHARS + SFB_PATH_CHARS + 8];
+
+  UnicodeSPrint (Line, sizeof (Line), L"%s %s %s",
+                 Selected ? L">" : L" ", Marker, Text);
+  SfbPrintCentered (Line, Selected ? SFB_ATTR_SELECTED : SFB_ATTR_NORMAL);
 }
 
 /*
@@ -194,14 +583,26 @@ SfbMoveCursor (IN OUT UINTN *Cursor, IN UINTN Count, IN SFB_KEY Key)
   }
 }
 
+/* Format a status line the way Print would, show it, and wait for a key. */
+VOID
+SfbReportStatusFormat (IN CONST CHAR16 *What, IN EFI_STATUS Status)
+{
+  CHAR16  Line[SFB_DESC_CHARS + 64];
+
+  UnicodeSPrint (Line, sizeof (Line), L"%s: %r", What, Status);
+
+  SfbClearScreen ();
+  SfbCenterPen (2);
+  SfbPrintCentered (Line, SFB_ATTR_NORMAL);
+  SfbPrintCentered (L"Press power to continue.", SFB_ATTR_NORMAL);
+  SfbWaitForKey (0);
+}
+
 /* Report a failure and hold the screen until the user acknowledges it. */
 VOID
 SfbReportStatus (IN CONST CHAR16 *What, IN EFI_STATUS Status)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
-  Print (L"\r\n%s: %r\r\n", What, Status);
-  Print (L"Press power to continue.\r\n");
-  SfbWaitForKey (0);
+  SfbReportStatusFormat (What, Status);
 }
 
 /*
@@ -213,13 +614,9 @@ SfbReportStatus (IN CONST CHAR16 *What, IN EFI_STATUS Status)
 VOID
 SfbShowFastbootMode (VOID)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
-  gST->ConOut->ClearScreen (gST->ConOut);
-  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
-
-  Print (L"FASTBOOT MODE\r\n");
-
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+  SfbClearScreen ();
+  SfbCenterPen (1);
+  SfbPrintCentered (L"FASTBOOT MODE", SFB_ATTR_TITLE);
 }
 
 /*
@@ -232,27 +629,31 @@ SfbShowBootingScreen (IN CONST CHAR16 *Name,
                       IN CONST CHAR16 *FilePath,
                       IN BOOLEAN       ClearScreen)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
+  CONST CHAR16  *FileName;
+  CHAR16        Line[96];
+
   /*
    * An unattended default boot must not blank whatever is already on screen
    * (typically the boot splash): only clear when the launch came from the menu,
    * where the menu itself is what needs clearing away.
    */
   if (ClearScreen) {
-    gST->ConOut->ClearScreen (gST->ConOut);
+    SfbClearScreen ();
+  } else {
+    gST->ConOut->EnableCursor (gST->ConOut, FALSE);
   }
-  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
 
   if (FilePath != NULL) {
-    CONST CHAR16 *FileName = SfbGetFileName (FilePath);
-    if (!SfbStrCaseEqual (FileName, L"boot.efi")) {
-      Print (L"Booting %s\r\n", (Name != NULL && Name[0] != L'\0') ? Name : L"...");
+    FileName = SfbGetFileName (FilePath);
+    if (SfbStrCaseEqual (FileName, L"boot.efi")) {
+      return;
     }
-  } else {
-    Print (L"Booting %s\r\n", (Name != NULL && Name[0] != L'\0') ? Name : L"...");
   }
 
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+  UnicodeSPrint (Line, sizeof (Line), L"Booting %s",
+                 (Name != NULL && Name[0] != L'\0') ? Name : L"...");
+  SfbCenterPen (1);
+  SfbPrintCentered (Line, SFB_ATTR_TITLE);
 }
 
 /*
@@ -263,13 +664,9 @@ SfbShowBootingScreen (IN CONST CHAR16 *Name,
 VOID
 SfbShowActionScreen (IN CONST CHAR16 *Text)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
-  gST->ConOut->ClearScreen (gST->ConOut);
-  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
-
-  Print (L"%s\r\n", Text);
-
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+  SfbClearScreen ();
+  SfbCenterPen (1);
+  SfbPrintCentered (Text, SFB_ATTR_TITLE);
 }
 
 /*
@@ -282,13 +679,9 @@ SfbShowActionScreen (IN CONST CHAR16 *Text)
 VOID
 SfbShowEnteringMenu (VOID)
 {
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_TITLE);
-  gST->ConOut->ClearScreen (gST->ConOut);
-  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
-
-  Print (L"Entering Boot Menu\r\n");
-
-  gST->ConOut->SetAttribute (gST->ConOut, SFB_ATTR_NORMAL);
+  SfbClearScreen ();
+  SfbCenterPen (1);
+  SfbPrintCentered (L"Entering Boot Menu", SFB_ATTR_TITLE);
 
   /* Wait for the key to be released... */
   gBS->Stall (SFB_ENTER_MENU_DELAY_S * 1000 * 1000);
@@ -313,7 +706,7 @@ SfbDrawMenu (IN CONST SFB_MENU_STATE *Menu,
   SfbBeginScreen (Title, NULL);
 
   if (Menu->Count == 0) {
-    Print (L"  No boot entries found.\r\n");
+    SfbPrintCentered (L"No boot entries found.", SFB_ATTR_NORMAL);
   }
 
   Start = SfbWindowStart (Cursor, Menu->Count, SFB_VISIBLE_ROWS);
@@ -339,7 +732,11 @@ SfbDrawMenu (IN CONST SFB_MENU_STATE *Menu,
   }
 
   if (Last < Menu->Count) {
-    Print (L"    ... %u more\r\n", (UINT32)(Menu->Count - Last));
+    CHAR16  More[64];
+
+    UnicodeSPrint (More, sizeof (More), L"... %u more",
+                   (UINT32)(Menu->Count - Last));
+    SfbPrintCentered (More, SFB_ATTR_NORMAL);
   }
 
   SfbEndScreen (L"Vol Up/Down: move   Power: select");
