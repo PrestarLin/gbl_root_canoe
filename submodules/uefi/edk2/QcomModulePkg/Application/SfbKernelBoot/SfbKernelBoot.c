@@ -1222,11 +1222,14 @@ CanaryBlink (
  * the caches are still enabled, then clean and invalidate, then disable the
  * caches, then the MMU, then the TLB.
  *
- * Nothing here can be undone and nothing can be reported after it, which is why
- * every check this application makes happens before it is called.
+ * Nothing can be undone or reported after boot services are gone. Every check
+ * this application makes therefore happens before that point; the one failure
+ * that can still occur inside - allocating the memory map - returns to the
+ * caller while boot services are up, so the menu gets to report it instead of
+ * hanging.
  */
 STATIC
-VOID
+EFI_STATUS
 ExitAndJump (
   IN VOID  *Kernel,
   IN VOID  *Dtb,
@@ -1260,7 +1263,7 @@ ExitAndJump (
       Map   = AllocatePages (Pages);
       if (Map == NULL) {
         Print (L"SfbKernelBoot: cannot allocate the memory map\n");
-        CpuDeadLoop ();
+        return EFI_OUT_OF_RESOURCES;
       }
       MapSize = EFI_PAGES_TO_SIZE (Pages);
       continue;
@@ -1319,6 +1322,7 @@ ExitAndJump (
     );
 
   CpuDeadLoop ();
+  return EFI_SUCCESS;
 }
 
 /* ---- entry -------------------------------------------------------------- */
@@ -1533,9 +1537,14 @@ SfbKernelBootEntry (
                "with x0=%lx", (UINT64)(UINTN)KAt, (UINT64)(UINTN)DtAt);
   LogProgress (LogRoot, Line);
 
-  ExitAndJump (KAt, DtAt, Reserve, RamdiskSize, RdAt, DtbSize);
+  Status = ExitAndJump (KAt, DtAt, Reserve, RamdiskSize, RdAt, DtbSize);
 
-  /* Not reached: ExitAndJump disables the MMU and never returns. */
+  /* Success never returns from there: the MMU is off and the branch taken.
+   * A failure return still has boot services, so take the same cleanup and
+   * report path every earlier error takes. */
+  if (EFI_ERROR (Status)) {
+    goto Out;
+  }
   return EFI_SUCCESS;
 
 Out:
