@@ -11,7 +11,7 @@ copy_resources:
 submodule_uefi: copy_resources
 	cd ../../submodules/uefi && make build && make tools
 	cp ../../submodules/uefi/build/BDS.efi ./build/module/BDS.efi
-	cp ../../submodules/uefi/build/SfbKernelBoot.efi ./build/module/SfbKernelBoot.efi
+	cp ../../submodules/uefi/build/SfbKernelBoot.efi ./build/module/efisp/SfbKernelBoot.efi
 	cp ../../submodules/uefi/build/ArbTools.efi ./build/module/efisp/tools/ArbTools.efi
 	cp ../../submodules/uefi/build/BLTools.efi ./build/module/efisp/tools/BLTools.efi
 	cp ../../submodules/uefi/build/RebootTools.efi ./build/module/efisp/tools/RebootTools.efi

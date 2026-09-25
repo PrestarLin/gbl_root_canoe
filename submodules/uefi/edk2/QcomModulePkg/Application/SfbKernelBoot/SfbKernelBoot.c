@@ -47,36 +47,33 @@
  * without it. This application talks to EFI_FILE_PROTOCOL directly and so has
  * to spell it out.
  */
-STATIC CONST CHAR16  mKernelPath[]  = L"\\kb\\kernel";
-STATIC CONST CHAR16  mDtbPath[]     = L"\\kb\\dtb";
-STATIC CONST CHAR16  mRamdiskPath[] = L"\\kb\\ramdisk";
+STATIC CONST CHAR16  mKernelPath[]  = L"\\efisp\\kernel";
+STATIC CONST CHAR16  mDtbPath[]     = L"\\efisp\\dtb";
+STATIC CONST CHAR16  mRamdiskPath[] = L"\\efisp\\ramdisk";
 
 /*
- * Progress log, written to a plain file on the SFBOOT volume.
+ * Progress log, next to the kernel files on the persist volume.
  *
  * The firmware's own log is not usable. logfs is only mounted -- the earlier
  * boot-chain BDS owns the flush, and it flushes when the volume is mounted,
  * which is long before this application runs -- so anything printed after that
- * is written nowhere. And the volume the kernel files live on is ext4, whose
- * driver in this build is read-only.
+ * is written nowhere.
  *
- * The SFBOOT volume is the one writable FAT volume on the device. It is not in
- * the BDS's scan set (the BDS classifies only FAT32, and this is FAT16), so it
- * has no file system bound when this runs; the driver itself handles FAT12,
- * FAT16 and FAT32, so connecting it is enough.
- *
- * Every entry is flushed and closed immediately, so a reset cannot lose what
- * has already been written.
+ * The persist volume is ext4 and this build's ext4 driver may be read-only,
+ * so every entry is best-effort: a failed write is ignored and never aborts
+ * the boot. Every entry is flushed and closed immediately, so a reset cannot
+ * lose what has already been written.
  */
-STATIC CONST CHAR16  mLogPath[] = L"\\kb\\last.txt";
+STATIC CONST CHAR16  mLogPath[] = L"\\efisp\\last.txt";
 
 /*
- * Find the kernel volume, bind a file system to it, and confirm it can be
- * written by creating and removing a probe file.
+ * Find the kernel volume (persist), bind a file system to it, and try a
+ * probe file to see whether writes work. Read-only is fine: without a log
+ * the boot still proceeds -- the files themselves only have to be readable.
  *
- * The label is what identifies it. Size would not: metadata, dsp_a and
- * oplusreserve* are all in the same range, and picking one of those by accident
- * would put a file on a partition that has nothing to do with this.
+ * The partition name is what identifies it. Size would not: metadata, dsp_a
+ * and oplusreserve* are all in the same range, and picking one of those by
+ * accident would put a file on a partition that has nothing to do with this.
  */
 STATIC
 EFI_STATUS
@@ -105,9 +102,9 @@ OpenKernelVolume (
     /*
      * Ask for the GPT entry, exactly as the BDS does when it hunts for logfs.
      *
-     * PartitionName is the *partition* name -- "recovery_b" -- not the file
-     * system label, which is "KBREC". They are set by different tools and
-     * matching the wrong one silently never hits. The partition name is also
+     * PartitionName is the *partition* name -- "persist" -- not the file
+     * system label. They are set by different tools and matching the wrong
+     * one silently never hits. The partition name is also
      * the easier of the two to read: it needs no media access at all, which
      * matters here because this device's logical sector size is 4096 and the
      * media cannot be read in 512-byte pieces.
@@ -120,7 +117,7 @@ OpenKernelVolume (
 
     Print (L"SfbKernelBoot: partition '%s'\n", Part->PartitionName);
 
-    if (StrnCmp (Part->PartitionName, L"recovery_b", 10) != 0) {
+    if (StrnCmp (Part->PartitionName, L"persist", 10) != 0) {
       continue;
     }
 
@@ -145,20 +142,20 @@ OpenKernelVolume (
     }
     Print (L"SfbKernelBoot: kernel volume mounted\n");
 
-    /* Prove it is writable before relying on it for the log. */
-    Status = (*Root)->Open (*Root, &Probe, L"\\kbprobe.tmp",
+    /* Try a probe file so the log can know whether writes work. Read-only
+     * is acceptable -- the log is best-effort and never aborts the boot. */
+    Status = (*Root)->Open (*Root, &Probe, L"\\efisp\\probe.tmp",
                             EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE |
                             EFI_FILE_MODE_CREATE, 0);
     if (!EFI_ERROR (Status) && Probe != NULL) {
       Probe->Delete (Probe);
       Print (L"SfbKernelBoot: kernel volume is writable\n");
-      FreePool (Handles);
-      return EFI_SUCCESS;
+    } else {
+      Print (L"SfbKernelBoot: kernel volume read-only (%r), log off\n",
+             Status);
     }
-
-    Print (L"SfbKernelBoot: kernel volume is read-only (%r)\n", Status);
-    (*Root)->Close (*Root);
-    *Root = NULL;
+    FreePool (Handles);
+    return EFI_SUCCESS;
   }
 
   FreePool (Handles);
@@ -1026,7 +1023,7 @@ ScanLastImage (
 #define PSTORE_MEM       0x400000U
 #define PSTORE_RECORD    0x40000U
 #define PSTORE_CONSOLE   0x200000U
-#define KLOG_PATH        L"\\kb\\klog.txt"
+#define KLOG_PATH        L"\\efisp\\klog.txt"
 
 STATIC
 EFI_STATUS
@@ -1359,9 +1356,10 @@ SfbKernelBootEntry (
    * --- 1. find the kernel volume ----------------------------------------
    *
    * One volume serves both purposes: it carries the kernel, device tree and
-   * ramdisk, and it takes the progress log. It is a FAT volume, so it is
-   * writable -- the volume this application is loaded from is ext4, whose
-   * driver here is read-only, so a log could not go there.
+   * ramdisk, and it takes the progress log. It is the persist partition --
+   * the volume this application is loaded from, whose efisp directory is the
+   * BDS's boot root. Its ext4 driver may be read-only, so the log is
+   * best-effort; the files themselves only have to be readable.
    *
    * Failure to find it is fatal, unlike a log failure would be: without it
    * there is nothing to boot.

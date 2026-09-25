@@ -1,7 +1,10 @@
 # 设计：SfbKernelBoot 内核直启器 + 帧缓冲菜单移植
 
 - 日期：2026-09-25
-- 状态：待评审
+- 状态：Phase 1 已进树；**2026-09-25 更新：按用户指令从 `recovery_b`/`\kb\`
+  改为 `persist`/`\efisp\`**（内核三件套直接放 efisp 文件夹，BDS 扫描
+  `$Kernel:SfbKernelBoot.efi` 选中即启动；详见 `/workspace/docs/
+  requirements-kernel-boot-efisp.md`）
 - 目标分支：`oneplus15`（PrestarLin/gbl_root_canoe，本地克隆 `gbl_root_canoe_cvhhji`）
 - 来源：lingxv/gbl_root_canoe（1vivy 系 fork）的 6 个自有提交，挑选移植
 - 实施顺序（用户指定）：**SfbKernelBoot 优先**
@@ -72,9 +75,9 @@ QcomModulePkg.dsc 条目），文件为 LF，与我们树无行尾冲突。
 
 ### 3.4 运行时预期（工具就绪态）
 
-选中 "Kernel" → `SfbKernelBoot` 启动 → 找不到 GPT 分区名 `recovery_b` 的卷
-或缺 `\kb\{kernel,dtb,ramdisk}` → **优雅打印错误并返回菜单**（其代码路径
-`goto Out` + 日志）。这是本阶段的预期行为；真机可用形态在 §8 接线阶段。
+选中 "Kernel" → `SfbKernelBoot` 启动 → 找不到 GPT 分区名 `persist` 的卷
+或缺 `\efisp\{kernel,dtb,ramdisk}` → **优雅打印错误并返回菜单**（其代码路径
+`goto Out` + 日志）。这是本阶段的预期行为；三件套放齐后即可真机引导。
 
 ### 3.5 该工具的关键事实（已核对源码）
 
@@ -83,8 +86,10 @@ QcomModulePkg.dsc 条目），文件为 LF，与我们树无行尾冲突。
   `Image.gz?` 并拒绝）。
 - DTB 校验 FDT magic，注入 `bootargs` 与 `linux,initrd-start/end`。
 - ABL 式引导：装载到 TextOffset、退 boot services、关 MMU/缓存、DTB 放 x0。
-- 卷识别 = GPT `PartitionName` 前缀 `recovery_b`（文件系统标签应为 `KBREC`），
-  还做可写探测（为进度日志 `\kb\last.txt`）；ext4 驱动只读时日志失败但继续。
+- 卷识别 = GPT `PartitionName` 精确匹配 `persist`（2026-09-25 改，原为
+  `recovery_b`），并探测 `\efisp\probe.tmp` 可写性；**只读不再致命**——
+  进度日志 `\efisp\last.txt` 降级为 best-effort（写失败仅打印、不中止启动），
+  因为 persist 是 ext4、本树 ext4 驱动可能只读。
 
 ## 4. Phase 2：菜单帧缓冲化（cherry-pick）
 
@@ -167,9 +172,14 @@ SetTimeout 接口（Spike 结论：PhoenixDxe 不在 abl 内、工作区无 xbl 
 
 ## 8. 后续（不在本设计内）
 
-- **内核接线**：裸三件套 `\kb\{kernel,dtb,ramdisk}`（未压缩 arm64 Image）
-  放置到 GPT 分区名 `recovery_b` 卷；接线前先在设备上确认
-  `ls /dev/block/by-name | grep recovery`。
+- **内核接线（已按用户指令改为 efisp 落位）**：三件套
+  `\efisp\{kernel,dtb,ramdisk}` 放 `persist` 卷（即
+  ` /data`/`persist` 分区的 `efisp` 目录，与 `SfbKernelBoot.efi` 同目录）；
+  kernel 用未压缩 arm64 `Image`（xlie-linux CI 的 `out/Image`；`kaanapali.efi`
+  当 kernel 传入也可——头检查只看前 0x3c 的 `ARM\x64` magic，但 UKI 追加节区
+  若使文件 > `image_size` 会被 `CheckKernelImage` 拒绝，BSS 通常远大于 200KB
+  节区所以大概率过，裸 Image 是稳妥选择）。接线前先在设备上确认
+  `ls /dev/block/by-name | grep persist`。
 - **UKI 形态**（用户问"内核镜像用哪种形态放进 efisp"）：
   - 纯 UKI 直接入驻 **不可行**：xlie-linux EFI stub 找 DTB 顺序 =
     cmdline `dtb=`（需 `CONFIG_EFI_ARMSTUB_DTB_LOADER=y` ✅ 且
@@ -198,6 +208,8 @@ SetTimeout 接口（Spike 结论：PhoenixDxe 不在 abl 内、工作区无 xbl 
 | 看门狗 | 等效方案：取消 Phoenix + 标准 UEFI 看门狗 300 秒（按键/命令续时） | 2026-09-25 |
 | 内核直启器落地 | 这次**不接通**主线内核，先把工具做好 | 2026-09-25 |
 | 内核镜像形态（后续） | 首选裸三件套；纯 UKI 直接入驻不可行（stub 无 DTB） | 2026-09-25 |
+| 内核三件套落位 | **persist 卷 `\efisp\`**（原 lingxv 方案为 `recovery_b`/`\kb\`，用户明确改为 efisp 文件夹直放直选） | 2026-09-25 |
+| 日志可写性 | persist ext4 可能只读 → 日志降级 best-effort，启动不依赖日志 | 2026-09-25 |
 | 集成方式 | 方案一：逐个 cherry-pick + 冲突原则解决 | 2026-09-25 |
 | 实施顺序 | SfbKernelBoot 优先 | 2026-09-25 |
 | droid-drm-takeover | 排除 | 2026-09-25 |
