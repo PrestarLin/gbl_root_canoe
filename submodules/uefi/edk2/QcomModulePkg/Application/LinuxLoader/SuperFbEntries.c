@@ -927,6 +927,8 @@ SfbLoadDriver (IN EFI_HANDLE Volume, IN CONST CHAR16 *Path)
 
   /* A UEFI driver installs its driver binding here and returns; the caller runs
    * the connect pass. A driver that returns an error is unloaded by the core. */
+  /* Never carry the armed 5-minute watchdog into the payload. */
+  gBS->SetWatchdogTimer (0, 0, 0, NULL);
   Status = gBS->StartImage (ImageHandle, NULL, NULL);
   DEBUG ((EFI_D_INFO, "SFB: driver '%s' start: %r\n", Path, Status));
 
@@ -1090,6 +1092,8 @@ SfbLaunchEntry (IN CONST SFB_BOOT_ENTRY *Entry,
     return Status;
   }
 
+  /* Never carry the armed 5-minute watchdog into the payload. */
+  gBS->SetWatchdogTimer (0, 0, 0, NULL);
   Status = gBS->StartImage (ImageHandle, &ExitDataSize, &ExitData);
   DEBUG ((EFI_D_INFO, "SFB: '%s' returned: %r\n", Entry->Path, Status));
 

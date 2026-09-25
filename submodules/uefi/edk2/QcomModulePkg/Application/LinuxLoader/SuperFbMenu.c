@@ -1125,6 +1125,8 @@ SfbRunSubMenu (IN EFI_HANDLE   Volume,
   Menu->DefaultIndex = SFB_NO_INDEX;
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN  Chosen;
 
     if (Rebuild) {
@@ -1203,6 +1205,8 @@ SfbRunBootMenu (VOID)
   Menu.DefaultIndex = SFB_NO_INDEX;
 
   while (TRUE) {
+    /* Five minutes without any key: reset the handset (spec §5). */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     UINTN  Chosen;
 
     if (Rebuild) {

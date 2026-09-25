@@ -620,6 +620,8 @@ EFI_STATUS FastbootInitialize (VOID)
 
   /* Wait for USB events in tight loop */
   while (1) {
+    /* Five minutes without USB activity or a key: reset the handset. */
+    gBS->SetWatchdogTimer (300, 0, 0, NULL);
     Status = HandleUsbEvents ();
     if (EFI_ERROR (Status) && (Status != EFI_ABORTED)) {
       DEBUG ((EFI_D_ERROR, "Error, failed to handle USB event\n"));
