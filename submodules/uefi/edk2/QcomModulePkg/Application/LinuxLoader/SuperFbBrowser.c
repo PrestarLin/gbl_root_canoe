@@ -659,7 +659,7 @@ SfbRunFileBrowser (VOID)
 
       UnicodeSPrint (More, sizeof (More), L"... %u more",
                      (UINT32)(RowCount - Last));
-      SfbPrintCentered (More, SFB_ATTR_NORMAL);
+      SfbDrawRow (FALSE, L" ", More);
     }
 
     SfbEndScreen (L"Vol Up/Down: move   Power: select");
