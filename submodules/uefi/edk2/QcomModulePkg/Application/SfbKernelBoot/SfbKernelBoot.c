@@ -38,6 +38,8 @@
 #include <Protocol/PartitionInfo.h>
 #include <Protocol/SimpleFileSystem.h>
 
+#include "PatchMemory.h"
+
 /*
  * The files this application reads, on the volume it was loaded from.
  *
@@ -1495,6 +1497,20 @@ SfbKernelBootEntry (
                "initrd %lx..%lx", (UINT64)CmdLen - 1,
                (UINT64)(UINTN)RdAt, (UINT64)(UINTN)RdAt + RamdiskSize);
   LogProgress (LogRoot, Line);
+
+  /*
+   * The map itself, the way ABL writes it while loading a kernel: fill
+   * /memory with the platform's real DRAM layout. A tree still carrying a
+   * placeholder there boots into a black screen -- the kernel sees no
+   * memory, prints nothing, and the watchdog eventually resets the board.
+   */
+  Status = PatchMemory (DtAt, DtbSize);
+  if (EFI_ERROR (Status)) {
+    LogProgress (LogRoot, "SfbKernelBoot: FAILED to patch /memory");
+    goto Out;
+  }
+  LogProgress (LogRoot,
+               "SfbKernelBoot: /memory filled with the platform DRAM map");
 
   Print (L"SfbKernelBoot: cmdline (%lu bytes): %a\n",
          (UINT64)CmdLen - 1, mCmdline);
