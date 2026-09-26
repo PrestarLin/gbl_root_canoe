@@ -1,0 +1,56 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [ main, oneplus15 ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Read version
+      id: ver
+      shell: bash
+      run: |
+        set -eu
+        . ./VERSION
+        echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Package release assets
+      run: |
+        cd toolkit_linux && zip -r ../toolkit_linux.zip . && cd ..
+        cd toolkit_windows && zip -r ../toolkit_windows.zip . && cd ..
+        cd toolkit_android && zip -r ../toolkit_android.zip . && cd ..
+        cd magisk_module && zip -r ../magisk_module.zip . && cd ..
+        cd vbmetafixer_linux && zip -r ../vbmetafixer_linux.zip . && cd ..
+        cd vbmetafixer_windows && zip -r ../vbmetafixer_windows.zip . && cd ..
+        cd vbmetafixer_android && zip -r ../vbmetafixer_android.zip . && cd ..
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.ver.outputs.tag }}
+        name: ${{ steps.ver.outputs.tag }}
+        target_commitish: ${{ github.sha }}
+        generate_release_notes: true
+        files: |
+          toolkit_linux.zip
+          toolkit_windows.zip
+          toolkit_android.zip
+          magisk_module.zip
+          vbmetafixer_linux.zip
+          vbmetafixer_windows.zip
+          vbmetafixer_android.zip
