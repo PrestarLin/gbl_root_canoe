@@ -38,6 +38,10 @@ jobs:
         cd vbmetafixer_linux && zip -r ../vbmetafixer_linux.zip . && cd ..
         cd vbmetafixer_windows && zip -r ../vbmetafixer_windows.zip . && cd ..
         cd vbmetafixer_android && zip -r ../vbmetafixer_android.zip . && cd ..
+        # The two boot-volume files, also published standalone so they can be
+        # dropped onto the persist partition without unpacking a toolkit.
+        cp toolkit_linux/BDS.efi BDS.efi
+        cp toolkit_linux/efisp/SfbKernelBoot.efi SfbKernelBoot.efi
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -54,3 +58,5 @@ jobs:
           vbmetafixer_linux.zip
           vbmetafixer_windows.zip
           vbmetafixer_android.zip
+          BDS.efi
+          SfbKernelBoot.efi
