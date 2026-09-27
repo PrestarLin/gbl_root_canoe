@@ -105,7 +105,7 @@ OpenKernelVolume (
     /*
      * Ask for the GPT entry, exactly as the BDS does when it hunts for logfs.
      *
-     * PartitionName is the *partition* name -- "recovery_b" -- not the file
+     * PartitionName is the *partition* name -- "recovery_a" -- not the file
      * system label, which is "KBREC". They are set by different tools and
      * matching the wrong one silently never hits. The partition name is also
      * the easier of the two to read: it needs no media access at all, which
@@ -120,7 +120,7 @@ OpenKernelVolume (
 
     Print (L"SfbKernelBoot: partition '%s'\n", Part->PartitionName);
 
-    if (StrnCmp (Part->PartitionName, L"recovery_b", 10) != 0) {
+    if (StrnCmp (Part->PartitionName, L"recovery_a", 10) != 0) {
       continue;
     }
 
