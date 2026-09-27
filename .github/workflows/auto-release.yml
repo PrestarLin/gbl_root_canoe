@@ -17,6 +17,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Read version
       id: ver
@@ -25,6 +27,32 @@ jobs:
         set -eu
         . ./VERSION
         echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Build release notes
+      shell: bash
+      run: |
+        set -eu
+        . ./VERSION
+        LAST=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$VERSION" | head -n1 || true)
+        {
+          echo "## $VERSION"
+          echo ""
+          echo "- commit: \`${GITHUB_SHA:0:10}\` ($GITHUB_REF_NAME)"
+          echo "- run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo ""
+          if [ -n "$LAST" ]; then
+            echo "### Changes since $LAST"
+            echo '```'
+            git log --pretty=format:'%h %s (%an, %ad)' --date=short -n 50 "$LAST..$GITHUB_SHA"
+          else
+            echo "### Recent commits"
+            echo '```'
+            git log --pretty=format:'%h %s (%an, %ad)' --date=short -n 40
+          fi
+          echo
+          echo '```'
+        } > release-body.md
+        cat release-body.md
 
     - name: Download artifacts
       uses: actions/download-artifact@v4
@@ -50,7 +78,7 @@ jobs:
         tag_name: ${{ steps.ver.outputs.tag }}
         name: ${{ steps.ver.outputs.tag }}
         target_commitish: ${{ github.sha }}
-        generate_release_notes: true
+        body_path: release-body.md
         files: |
           toolkit_linux.zip
           toolkit_windows.zip

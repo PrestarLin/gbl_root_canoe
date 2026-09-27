@@ -18,6 +18,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Validate release version
       shell: bash
@@ -28,6 +30,38 @@ jobs:
           echo "Release tag must match VERSION"
           exit 1
         }
+
+    - name: Build release notes
+      shell: bash
+      run: |
+        set -eu
+        . ./VERSION
+        LAST=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$VERSION" | head -n1 || true)
+        {
+          echo "## $VERSION"
+          echo ""
+          echo "- commit: \`${GITHUB_SHA:0:10}\` ($GITHUB_REF_NAME)"
+          echo "- run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo ""
+          if [ -n "$LAST" ]; then
+            echo "### Changes since $LAST"
+            echo '```'
+            git log --pretty=format:'%h %s (%an, %ad)' --date=short -n 50 "$LAST..$GITHUB_SHA"
+          else
+            echo "### Recent commits"
+            echo '```'
+            git log --pretty=format:'%h %s (%an, %ad)' --date=short -n 40
+          fi
+          echo
+          echo '```'
+        } > release-body.md
+        if [ -f RELEASE_NOTES.md ]; then
+          echo "" >> release-body.md
+          echo "---" >> release-body.md
+          echo "" >> release-body.md
+          cat RELEASE_NOTES.md >> release-body.md
+        fi
+        cat release-body.md
 
     - name: Download artifacts
       uses: actions/download-artifact@v4
@@ -46,8 +80,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         name: ${{ github.ref_name }}
-        generate_release_notes: false
-        body_path: RELEASE_NOTES.md
+        body_path: release-body.md
         files: |
           toolkit_linux.zip
           toolkit_windows.zip
