@@ -52,6 +52,14 @@ STATIC CONST CHAR16  mDtbPath[]     = L"\\efisp\\dtb";
 STATIC CONST CHAR16  mRamdiskPath[] = L"\\efisp\\ramdisk";
 
 /*
+ * Optional per-device command line, absent by default. The built-in line
+ * carries only what every SM8850 part needs; this file is how one device adds
+ * what only it needs -- a root=PARTUUID for a rootfs, console tweaks -- without
+ * compiling any of it into a bootloader shared across devices.
+ */
+STATIC CONST CHAR16  mCmdlineTxtPath[] = L"\\efisp\\cmdline.txt";
+
+/*
  * Progress log, next to the kernel files on the persist volume.
  *
  * The firmware's own log is not usable. logfs is only mounted -- the earlier
@@ -309,12 +317,16 @@ LogProgress (
 }
 
 /*
- * Command line for the first experiment. Kept short on purpose: the point is to
- * prove the handoff, and every extra parameter is another thing that can be
- * wrong. earlycon and a high loglevel are the two that make a failure visible.
+ * The built-in command line: platform-generic defaults only, so one
+ * bootloader serves every SM8850 device. Device-specific parameters (a
+ * root=PARTUUID for a rootfs, say) belong in \efisp\cmdline.txt, which is
+ * appended after this line at boot -- later kernel parameters win, so the
+ * file can override panic= or loglevel= while memmap/ramoops below stay in
+ * force.
  *
- * console=tty0 is what makes them visible here: there is no UART on this board,
- * so a serial console goes nowhere. The device tree's /chosen carries a
+ * earlycon and a high loglevel are the two that make a failure visible.
+ * console=tty0 is what makes them visible here: there is no UART on this
+ * board, so a serial console goes nowhere. The device tree's /chosen carries a
  * simple-framebuffer node and the kernel is built with CONFIG_FB_SIMPLE, so a
  * frame buffer console exists as soon as that driver binds -- late, but it
  * replays the log buffer, so the whole boot appears on the panel at once.
@@ -322,14 +334,13 @@ LogProgress (
  * The ramoops settings are the other channel, and the one that works when the
  * kernel dies before any console exists: the zones live in DRAM at an address
  * outside the memory the device tree describes, so nothing else uses it.
- * memmap reserves it so the kernel does not either. panic=5 makes a panic
+ * memmap reserves it so the kernel does not either. panic=30 makes a panic
  * reboot -- a warm reset, which is what leaves the zones readable -- and
  * max_reason=4 lets the dump happen for every reason pstore knows about.
  */
 STATIC CONST CHAR8  mCmdline[] =
-  "root=PARTUUID=4B3A4040-F3F4-411C-B61B-D9783E4A9E25 earlycon "
-  "console=tty0 loglevel=8 log_buf_len=16M panic=5 clk_ignore_unused "
-  "pd_ignore_unused memmap=4M$0xB8000000 "
+  "earlycon console=tty0 loglevel=8 log_buf_len=16M panic=30 "
+  "clk_ignore_unused pd_ignore_unused memmap=4M$0xB8000000 "
   "ramoops.mem_address=0xB8000000 ramoops.mem_size=0x400000 "
   "ramoops.record_size=0x40000 ramoops.console_size=0x200000 "
   "ramoops.max_reason=4";
@@ -495,6 +506,170 @@ Done:
     File->Close (File);
   }
   return Status;
+}
+
+/* ---- command line -------------------------------------------------------- */
+
+/* The bootargs placeholder in the device tree, and so the hard ceiling. */
+#define CMDLINE_MAX  1024
+
+/*
+ * Read \efisp\cmdline.txt, if the volume carries one.
+ *
+ * A missing or empty file is the normal case and returns EFI_SUCCESS with
+ * *Len = 0; a read failure returns its status so the caller can decide. A file
+ * that does not fit is a configuration mistake, reported as
+ * EFI_BUFFER_TOO_SMALL -- the caller stops rather than silently dropping what
+ * was asked for.
+ *
+ * Line endings become spaces on the way in: the kernel splits bootargs on
+ * spaces, so a CRLF from an editor would otherwise become part of a parameter
+ * and quietly break it.
+ */
+STATIC
+EFI_STATUS
+ReadCmdlineFile (
+  IN  EFI_FILE_PROTOCOL  *Root,
+  OUT CHAR8              *Buf,
+  IN  UINTN              BufSize,
+  OUT UINTN              *Len
+  )
+{
+  EFI_STATUS        Status;
+  EFI_FILE_PROTOCOL *File = NULL;
+  EFI_FILE_INFO     *Info = NULL;
+  UINTN             InfoSize = 0;
+  UINTN             Want;
+  UINTN             Index;
+
+  *Len = 0;
+
+  Status = Root->Open (Root, &File, (CHAR16 *)mCmdlineTxtPath,
+                       EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, NULL);
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    Print (L"SfbKernelBoot: cmdline.txt GetInfo: %r\n", Status);
+    goto Done;
+  }
+  Info = AllocatePool (InfoSize);
+  if (Info == NULL) {
+    Status = EFI_OUT_OF_RESOURCES;
+    goto Done;
+  }
+  Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
+  if (EFI_ERROR (Status)) {
+    Print (L"SfbKernelBoot: cmdline.txt GetInfo: %r\n", Status);
+    goto Done;
+  }
+
+  if (Info->FileSize == 0) {
+    Status = EFI_SUCCESS;
+    goto Done;
+  }
+  if (Info->FileSize >= BufSize) {
+    Print (L"SfbKernelBoot: cmdline.txt is %lu bytes, over the %u byte "
+           L"limit\n", (UINT64)Info->FileSize, (UINT32)(BufSize - 1));
+    Status = EFI_BUFFER_TOO_SMALL;
+    goto Done;
+  }
+
+  Want = (UINTN)Info->FileSize;
+  Status = File->Read (File, &Want, Buf);
+  if (EFI_ERROR (Status)) {
+    Print (L"SfbKernelBoot: cmdline.txt read: %r\n", Status);
+    goto Done;
+  }
+  if (Want != (UINTN)Info->FileSize) {
+    Print (L"SfbKernelBoot: cmdline.txt short read, %lu of %lu\n",
+           (UINT64)Want, (UINT64)Info->FileSize);
+    Status = EFI_LOAD_ERROR;
+    goto Done;
+  }
+
+  for (Index = 0; Index < Want; Index++) {
+    if (Buf[Index] == '\r' || Buf[Index] == '\n') {
+      Buf[Index] = ' ';
+    }
+  }
+  while (Want > 0 && Buf[Want - 1] == ' ') {
+    Want--;
+  }
+  Buf[Want] = '\0';
+  *Len    = Want;
+  Status  = EFI_SUCCESS;
+
+Done:
+  if (Info != NULL) {
+    FreePool (Info);
+  }
+  if (File != NULL) {
+    File->Close (File);
+  }
+  return Status;
+}
+
+/*
+ * Assemble the command line handed to the kernel: the built-in defaults
+ * first, then \efisp\cmdline.txt after them when the volume carries one.
+ * Parameters later in the line win, so the file can override panic= or add a
+ * device-specific root= without the platform defaults losing memmap/ramoops.
+ *
+ * *Len comes back including the terminator, the same convention the checks
+ * around the call site already use. A file that cannot be read leaves the
+ * built-in line in place -- an override is an addition, never a requirement.
+ * A file that does not fit is fatal: booting without it would quietly drop
+ * what was asked for.
+ */
+STATIC
+EFI_STATUS
+BuildCmdline (
+  IN  EFI_FILE_PROTOCOL  *Root,
+  OUT CHAR8              *Cmdline,
+  IN  UINTN              CmdlineSize,
+  OUT UINTN              *Len
+  )
+{
+  EFI_STATUS  Status;
+  CHAR8       Extra[CMDLINE_MAX];
+  UINTN       BaseLen;
+  UINTN       ExtraLen = 0;
+
+  BaseLen = AsciiStrLen (mCmdline);
+  CopyMem (Cmdline, mCmdline, BaseLen + 1);
+  *Len = BaseLen + 1;
+
+  Status = ReadCmdlineFile (Root, Extra, sizeof (Extra), &ExtraLen);
+  if (Status == EFI_BUFFER_TOO_SMALL) {
+    return Status;
+  }
+  if (EFI_ERROR (Status)) {
+    if (Status != EFI_NOT_FOUND) {
+      Print (L"SfbKernelBoot: cmdline.txt unreadable (%r), built-in only\n",
+             Status);
+    }
+    return EFI_SUCCESS;
+  }
+  if (ExtraLen == 0) {
+    return EFI_SUCCESS;
+  }
+
+  if (BaseLen + 1 + ExtraLen + 1 > CmdlineSize) {
+    Print (L"SfbKernelBoot: defaults + cmdline.txt need %lu bytes, the "
+           L"placeholder is %lu\n",
+           (UINT64)(BaseLen + 1 + ExtraLen + 1), (UINT64)CmdlineSize);
+    return EFI_BUFFER_TOO_SMALL;
+  }
+
+  Cmdline[BaseLen] = ' ';
+  CopyMem (&Cmdline[BaseLen + 1], Extra, ExtraLen + 1);
+  *Len = BaseLen + 1 + ExtraLen + 1;
+  Print (L"SfbKernelBoot: cmdline.txt appended, %lu bytes total\n",
+         (UINT64)*Len - 1);
+  return EFI_SUCCESS;
 }
 
 /* ---- validation --------------------------------------------------------- */
@@ -1349,6 +1524,7 @@ SfbKernelBootEntry (
   UINTN                            CmdLen;
   UINTN                            Reserve;
   CHAR8                            Line[256];
+  CHAR8                            Cmdline[CMDLINE_MAX];
 
   Print (L"SfbKernelBoot: starting\n");
 
@@ -1418,11 +1594,9 @@ SfbKernelBootEntry (
                (UINT64)Info.Flags);
   LogProgress (LogRoot, Line);
 
-  CmdLen = AsciiStrLen (mCmdline) + 1;
-  if (CmdLen > 1024) {
-    Print (L"SfbKernelBoot: command line is %lu bytes, over the 1024 byte "
-           L"placeholder\n", (UINT64)CmdLen);
-    Status = EFI_LOAD_ERROR;
+  Status = BuildCmdline (LogRoot, Cmdline, sizeof (Cmdline), &CmdLen);
+  if (EFI_ERROR (Status)) {
+    LogProgress (LogRoot, "SfbKernelBoot: FAILED to build the command line");
     goto Out;
   }
 
@@ -1483,7 +1657,7 @@ SfbKernelBootEntry (
    * through the last two, so leaving them out means it never looks at the
    * ramdisk at all.
    */
-  Status = PatchChosen (DtAt, DtbSize, mCmdline,
+  Status = PatchChosen (DtAt, DtbSize, Cmdline,
                         (UINT64)(UINTN)RdAt,
                         (UINT64)(UINTN)RdAt + RamdiskSize);
   if (EFI_ERROR (Status)) {
@@ -1497,7 +1671,7 @@ SfbKernelBootEntry (
   LogProgress (LogRoot, Line);
 
   Print (L"SfbKernelBoot: cmdline (%lu bytes): %a\n",
-         (UINT64)CmdLen - 1, mCmdline);
+         (UINT64)CmdLen - 1, Cmdline);
   Print (L"SfbKernelBoot: leaving boot services and branching to %lx\n",
          (UINT64)(UINTN)KAt);
 
