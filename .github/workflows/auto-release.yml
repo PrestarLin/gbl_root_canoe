@@ -27,6 +27,19 @@ jobs:
         set -eu
         . ./VERSION
         echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+        # Release title: the commit content, not the version number. Every
+        # push has to end in a bump commit (the version check compares
+        # VERSION against HEAD^), so skip bump commits and title the release
+        # with the change it actually carries; fall back to HEAD for a
+        # bump-only push.
+        SUBJ=$(git log --pretty=%s -1 --grep='^build: bump version' \
+               --invert-grep "$GITHUB_SHA" || true)
+        [ -n "$SUBJ" ] || SUBJ=$(git log -1 --pretty=%s "$GITHUB_SHA")
+        {
+          echo "subject<<__SUBJECT__"
+          echo "$SUBJ"
+          echo "__SUBJECT__"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Build release notes
       shell: bash
@@ -75,7 +88,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.ver.outputs.tag }}
-        name: ${{ steps.ver.outputs.tag }}
+        name: ${{ steps.ver.outputs.subject }}
         target_commitish: ${{ github.sha }}
         body_path: release-body.md
         files: |
