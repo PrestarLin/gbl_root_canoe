@@ -327,7 +327,8 @@ LogProgress (
  * max_reason=4 lets the dump happen for every reason pstore knows about.
  */
 STATIC CONST CHAR8  mCmdline[] =
-  "earlycon console=tty0 loglevel=8 log_buf_len=16M panic=30 clk_ignore_unused "
+  "root=PARTUUID=4B3A4040-F3F4-411C-B61B-D9783E4A9E25 earlycon "
+  "console=tty0 loglevel=8 log_buf_len=16M panic=30 clk_ignore_unused "
   "pd_ignore_unused memmap=4M$0xB8000000 "
   "ramoops.mem_address=0xB8000000 ramoops.mem_size=0x400000 "
   "ramoops.record_size=0x40000 ramoops.console_size=0x200000 "
