@@ -319,3 +319,11 @@
 		<LibraryClasses>
 			StackCanary|QcomModulePkg/Library/StackCanary/StackCanary.inf
 	}
+
+	# Debug sibling: same launcher, but the trio and the logs live on the
+	# recovery_a partition reformatted FAT16 (\kb), the lingxv flow with
+	# recovery_b renamed. Same stack-canary override as above.
+	QcomModulePkg/Application/MainlineDebug/MainlineDebug.inf {
+		<LibraryClasses>
+			StackCanary|QcomModulePkg/Library/StackCanary/StackCanary.inf
+	}

@@ -83,6 +83,7 @@ jobs:
         # dropped onto the persist partition without unpacking a toolkit.
         cp toolkit_linux/BDS.efi BDS.efi
         cp toolkit_linux/efisp/SfbKernelBoot.efi SfbKernelBoot.efi
+        cp toolkit_linux/efisp/mainlinedebug.efi mainlinedebug.efi
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -101,3 +102,4 @@ jobs:
           vbmetafixer_android.zip
           BDS.efi
           SfbKernelBoot.efi
+          mainlinedebug.efi

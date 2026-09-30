@@ -2,3 +2,4 @@ Android:boot.efi
 $Android backup:boot_backup.efi
 $Kernel:SfbKernelBoot.efi
 %Android Tools:tools\ENTRIES
+$MainlineDebug:mainlinedebug.efi
