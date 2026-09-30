@@ -19,6 +19,7 @@
 
 [Sources]
   mainlinedebug.c
+  ../SfbKernelBoot/PatchMemory.c
 
 [Packages]
   MdePkg/MdePkg.dec

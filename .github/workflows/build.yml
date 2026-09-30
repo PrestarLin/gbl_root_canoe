@@ -41,6 +41,9 @@ jobs:
         node --check targets/magisk_module/module/webroot/app.js
         node --check targets/magisk_module/module/webroot/kernelsu.js
 
+    - name: Test device tree patching
+      run: bash tests/run.sh
+
     - name: Install dependencies
       run: |
         sudo apt-get update

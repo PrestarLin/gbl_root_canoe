@@ -38,6 +38,8 @@
 #include <Protocol/PartitionInfo.h>
 #include <Protocol/SimpleFileSystem.h>
 
+#include "../SfbKernelBoot/PatchMemory.h"
+
 /*
  * The files this application reads, on the volume it was loaded from.
  *
@@ -787,6 +789,83 @@ PatchChosen (
   return EFI_VOLUME_CORRUPTED;
 }
 
+/*
+ * Fill the placed tree's /memory reg with the platform's real DRAM layout,
+ * read from the firmware's own memory map.
+ *
+ * Same contract as SfbKernelBoot's copy of this (see PatchMemory.c): a map
+ * that cannot be synthesized leaves the reg as the tree brought it and the
+ * boot continues; only a tree that structurally cannot carry a map is an
+ * error. This launcher exists to boot the same kernel with extra debugging,
+ * so it must describe memory the same way the normal path does -- a static
+ * capture from some other unit is exactly the ghost-page failure this
+ * replaces.
+ */
+STATIC
+EFI_STATUS
+PatchPlacedMemoryMap (
+  IN OUT UINT8             *DtAt,
+  IN     UINTN              DtbSize,
+  IN     EFI_FILE_PROTOCOL  *LogRoot
+  )
+{
+  EFI_STATUS            Status;
+  EFI_MEMORY_DESCRIPTOR *Map = NULL;
+  UINTN                 MapSize = 0;
+  UINTN                 MapKey;
+  UINTN                 DescSize;
+  UINT32                DescVer;
+  UINTN                 Regions = 0;
+  UINT64                Total = 0;
+  CHAR8                 Line[160];
+
+  Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    AsciiSPrint (Line, sizeof (Line),
+                 "MainlineDebug: GetMemoryMap(size) -> %lx; keeping the "
+                 "device tree's own map", (UINT64)Status);
+    LogProgress (LogRoot, Line);
+    return EFI_NOT_READY;
+  }
+  MapSize += 8 * DescSize;
+  Map = AllocatePool (MapSize);
+  if (Map == NULL) {
+    LogProgress (LogRoot,
+                 "MainlineDebug: no memory map buffer; keeping the device "
+                 "tree's own map");
+    return EFI_NOT_READY;
+  }
+  Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+  if (EFI_ERROR (Status)) {
+    AsciiSPrint (Line, sizeof (Line),
+                 "MainlineDebug: GetMemoryMap -> %lx; keeping the device "
+                 "tree's own map", (UINT64)Status);
+    LogProgress (LogRoot, Line);
+    FreePool (Map);
+    return EFI_NOT_READY;
+  }
+
+  Status = PatchMemory (DtAt, DtbSize, Map, MapSize, DescSize,
+                        &Regions, &Total);
+  FreePool (Map);
+  if (Status == EFI_NOT_READY) {
+    /* PatchMemory said why on the console; the reg stayed as it arrived. */
+    LogProgress (LogRoot,
+                 "MainlineDebug: /memory not synthesized; keeping the "
+                 "device tree's own map");
+    return EFI_NOT_READY;
+  }
+  if (EFI_ERROR (Status)) {
+    return Status;   /* structural: PatchMemory printed the reason */
+  }
+
+  AsciiSPrint (Line, sizeof (Line),
+               "MainlineDebug: /memory synthesized: %lu regions, %lu bytes",
+               (UINT64)Regions, Total);
+  LogProgress (LogRoot, Line);
+  return EFI_SUCCESS;
+}
+
 /* ---- memory ------------------------------------------------------------- */
 
 /*
@@ -1493,6 +1572,20 @@ MainlineDebugEntry (
                "initrd %lx..%lx", (UINT64)CmdLen - 1,
                (UINT64)(UINTN)RdAt, (UINT64)(UINTN)RdAt + RamdiskSize);
   LogProgress (LogRoot, Line);
+
+  /*
+   * Then the map itself, the way ABL writes it while loading a kernel:
+   * fill /memory with the platform's real DRAM layout as the firmware
+   * sees it. A map that cannot be synthesized leaves the tree's own reg
+   * in place and the boot continues; a tree that cannot carry a map at
+   * all stops here rather than booting into a silent black screen.
+   */
+  Status = PatchPlacedMemoryMap (DtAt, DtbSize, LogRoot);
+  if (EFI_ERROR (Status) && Status != EFI_NOT_READY) {
+    LogProgress (LogRoot, "MainlineDebug: FAILED to patch /memory");
+    goto Out;
+  }
+  Status = EFI_SUCCESS;
 
   Print (L"MainlineDebug: cmdline (%lu bytes): %a\n",
          (UINT64)CmdLen - 1, mCmdline);

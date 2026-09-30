@@ -38,6 +38,8 @@
 #include <Protocol/PartitionInfo.h>
 #include <Protocol/SimpleFileSystem.h>
 
+#include "PatchMemory.h"
+
 /*
  * The files this application reads, on the volume it was loaded from.
  *
@@ -1036,6 +1038,93 @@ PatchChosen (
   return EFI_VOLUME_CORRUPTED;
 }
 
+/*
+ * Fill the placed tree's /memory reg with the platform's real DRAM layout,
+ * read from the firmware's own memory map.
+ *
+ * The tree arrived with a fixed 21-region reg filled in on the host from
+ * some captured machine. That capture is only right for its own unit: on a
+ * 16G device a 12G map names regions that do not exist, and handing those
+ * to the page allocator ends in a synchronous external abort before init
+ * ever runs. The firmware is the authority for what RAM is really there,
+ * so read its map and rebuild the reg from it (PatchMemory.c).
+ *
+ * Best effort. EFI_NOT_READY -- no map could be synthesized -- leaves the
+ * reg as the tree brought it, which boots the way it does today; only a
+ * tree that structurally cannot carry a map (reg that is not the fixed
+ * slot, no /memory node, malformed header) comes back as an error, since
+ * booting that means booting a machine with no memory description at all.
+ */
+STATIC
+EFI_STATUS
+PatchPlacedMemoryMap (
+  IN OUT UINT8             *DtAt,
+  IN     UINTN              DtbSize,
+  IN     EFI_FILE_PROTOCOL  *LogRoot
+  )
+{
+  EFI_STATUS            Status;
+  EFI_MEMORY_DESCRIPTOR *Map = NULL;
+  UINTN                 MapSize = 0;
+  UINTN                 MapKey;
+  UINTN                 DescSize;
+  UINT32                DescVer;
+  UINTN                 Regions = 0;
+  UINT64                Total = 0;
+  CHAR8                 Line[160];
+
+  /*
+   * Same two-call shape PlaceAll uses: the first call only reports the
+   * size, and the second gets slack for the bookkeeping any allocation
+   * between the two adds to the map.
+   */
+  Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    AsciiSPrint (Line, sizeof (Line),
+                 "SfbKernelBoot: GetMemoryMap(size) -> %lx; keeping the "
+                 "device tree's own map", (UINT64)Status);
+    LogProgress (LogRoot, Line);
+    return EFI_NOT_READY;
+  }
+  MapSize += 8 * DescSize;
+  Map = AllocatePool (MapSize);
+  if (Map == NULL) {
+    LogProgress (LogRoot,
+                 "SfbKernelBoot: no memory map buffer; keeping the device "
+                 "tree's own map");
+    return EFI_NOT_READY;
+  }
+  Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescSize, &DescVer);
+  if (EFI_ERROR (Status)) {
+    AsciiSPrint (Line, sizeof (Line),
+                 "SfbKernelBoot: GetMemoryMap -> %lx; keeping the device "
+                 "tree's own map", (UINT64)Status);
+    LogProgress (LogRoot, Line);
+    FreePool (Map);
+    return EFI_NOT_READY;
+  }
+
+  Status = PatchMemory (DtAt, DtbSize, Map, MapSize, DescSize,
+                        &Regions, &Total);
+  FreePool (Map);
+  if (Status == EFI_NOT_READY) {
+    /* PatchMemory said why on the console; the reg stayed as it arrived. */
+    LogProgress (LogRoot,
+                 "SfbKernelBoot: /memory not synthesized; keeping the "
+                 "device tree's own map");
+    return EFI_NOT_READY;
+  }
+  if (EFI_ERROR (Status)) {
+    return Status;   /* structural: PatchMemory printed the reason */
+  }
+
+  AsciiSPrint (Line, sizeof (Line),
+               "SfbKernelBoot: /memory synthesized: %lu regions, %lu bytes",
+               (UINT64)Regions, Total);
+  LogProgress (LogRoot, Line);
+  return EFI_SUCCESS;
+}
+
 /* ---- memory ------------------------------------------------------------- */
 
 /*
@@ -1752,6 +1841,20 @@ SfbKernelBootEntry (
                "initrd %lx..%lx", (UINT64)CmdLen - 1,
                (UINT64)(UINTN)RdAt, (UINT64)(UINTN)RdAt + RamdiskSize);
   LogProgress (LogRoot, Line);
+
+  /*
+   * Then the map itself, the way ABL writes it while loading a kernel:
+   * fill /memory with the platform's real DRAM layout as the firmware
+   * sees it. A map that cannot be synthesized leaves the tree's own reg
+   * in place and the boot continues; a tree that cannot carry a map at
+   * all stops here rather than booting into a silent black screen.
+   */
+  Status = PatchPlacedMemoryMap (DtAt, DtbSize, LogRoot);
+  if (EFI_ERROR (Status) && Status != EFI_NOT_READY) {
+    LogProgress (LogRoot, "SfbKernelBoot: FAILED to patch /memory");
+    goto Out;
+  }
+  Status = EFI_SUCCESS;
 
   Print (L"SfbKernelBoot: cmdline (%lu bytes): %a\n",
          (UINT64)CmdLen - 1, Cmdline);
