@@ -60,24 +60,21 @@ STATIC CONST CHAR16  mRamdiskPath[] = L"\\efisp\\ramdisk";
 STATIC CONST CHAR16  mCmdlineTxtPath[] = L"\\efisp\\cmdline.txt";
 
 /*
- * Progress log, next to the kernel files on the persist volume.
+ * Progress log, at the root of the recovery_a partition.
  *
- * The firmware's own log is not usable. logfs is only mounted -- the earlier
- * boot-chain BDS owns the flush, and it flushes when the volume is mounted,
- * which is long before this application runs -- so anything printed after that
- * is written nowhere.
- *
- * The persist volume is ext4 and this build's ext4 driver may be read-only,
- * so every entry is best-effort: a failed write is ignored and never aborts
- * the boot. Every entry is flushed and closed immediately, so a reset cannot
- * lose what has already been written.
+ * The kernel files stay on persist; the log moves off it because that
+ * volume is ext4 and this build's ext4 driver may be read-only -- every
+ * entry written there was silently lost. recovery_a is a different volume
+ * and its writes are still best-effort: a failed write is ignored and
+ * never aborts the boot. Every entry is flushed and closed immediately,
+ * so a reset cannot lose what has already been written.
  */
-STATIC CONST CHAR16  mLogPath[] = L"\\efisp\\last.txt";
+STATIC CONST CHAR16  mLogPath[] = L"\\last.txt";
 
 /*
  * Find the kernel volume (persist), bind a file system to it, and try a
- * probe file to see whether writes work. Read-only is fine: without a log
- * the boot still proceeds -- the files themselves only have to be readable.
+ * probe file to report whether writes work there. Read-only is fine: the
+ * files only have to be readable -- the log lives on recovery_a.
  *
  * The partition name is what identifies it. Size would not: metadata, dsp_a
  * and oplusreserve* are all in the same range, and picking one of those by
@@ -150,8 +147,8 @@ OpenKernelVolume (
     }
     Print (L"SfbKernelBoot: kernel volume mounted\n");
 
-    /* Try a probe file so the log can know whether writes work. Read-only
-     * is acceptable -- the log is best-effort and never aborts the boot. */
+    /* Try a probe file to report whether writes work here at all; read-only
+     * is acceptable -- the log lives on recovery_a. */
     Status = (*Root)->Open (*Root, &Probe, L"\\efisp\\probe.tmp",
                             EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE |
                             EFI_FILE_MODE_CREATE, 0);
@@ -159,9 +156,90 @@ OpenKernelVolume (
       Probe->Delete (Probe);
       Print (L"SfbKernelBoot: kernel volume is writable\n");
     } else {
-      Print (L"SfbKernelBoot: kernel volume read-only (%r), log off\n",
+      Print (L"SfbKernelBoot: kernel volume read-only (%r)\n",
              Status);
     }
+    FreePool (Handles);
+    return EFI_SUCCESS;
+  }
+
+  FreePool (Handles);
+  return EFI_NOT_FOUND;
+}
+
+/*
+ * Find the recovery_a partition and bind a file system to it for the logs.
+ * The same hunt as OpenKernelVolume, a different partition name. The probe
+ * file decides: if this volume refuses writes, the caller falls back to the
+ * kernel volume, so a log line is never dropped while a writable volume
+ * exists somewhere.
+ */
+STATIC
+EFI_STATUS
+OpenLogVolume (
+  OUT EFI_FILE_PROTOCOL  **Root
+  )
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  *Handles = NULL;
+  UINTN       Count = 0;
+  UINTN       Index;
+
+  *Root = NULL;
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid,
+                                    NULL, &Count, &Handles);
+  if (EFI_ERROR (Status) || Handles == NULL) {
+    return Status;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    EFI_PARTITION_ENTRY              *Part = NULL;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs = NULL;
+    EFI_FILE_PROTOCOL                *Probe = NULL;
+
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiPartitionRecordGuid,
+                                  (VOID **)&Part);
+    if (EFI_ERROR (Status) || Part == NULL) {
+      continue;
+    }
+
+    if (StrnCmp (Part->PartitionName, L"recovery_a", 10) != 0) {
+      continue;
+    }
+
+    Print (L"SfbKernelBoot: log volume at handle %u\n", (UINT32)Index);
+
+    gBS->ConnectController (Handles[Index], NULL, NULL, TRUE);
+
+    Status = gBS->HandleProtocol (Handles[Index],
+                                 &gEfiSimpleFileSystemProtocolGuid,
+                                 (VOID **)&Fs);
+    if (EFI_ERROR (Status) || Fs == NULL) {
+      Print (L"SfbKernelBoot: no file system bound to it (%r)\n", Status);
+      continue;
+    }
+
+    Status = Fs->OpenVolume (Fs, Root);
+    if (EFI_ERROR (Status)) {
+      Print (L"SfbKernelBoot: OpenVolume -> %r\n", Status);
+      *Root = NULL;
+      continue;
+    }
+
+    /* A volume that cannot be written is no use for logs; let the caller
+     * fall back to the kernel volume instead of losing every line. */
+    Status = (*Root)->Open (*Root, &Probe, L"\\probe.tmp",
+                            EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE |
+                            EFI_FILE_MODE_CREATE, 0);
+    if (EFI_ERROR (Status) || Probe == NULL) {
+      Print (L"SfbKernelBoot: log volume read-only (%r)\n", Status);
+      (*Root)->Close (*Root);
+      *Root = NULL;
+      continue;
+    }
+    Probe->Delete (Probe);
+    Print (L"SfbKernelBoot: log volume mounted, writable\n");
     FreePool (Handles);
     return EFI_SUCCESS;
   }
@@ -317,12 +395,10 @@ LogProgress (
 }
 
 /*
- * The built-in command line: platform-generic defaults only, so one
- * bootloader serves every SM8850 device. Device-specific parameters (a
- * root=PARTUUID for a rootfs, say) belong in \efisp\cmdline.txt, which is
- * appended after this line at boot -- later kernel parameters win, so the
- * file can override panic= or loglevel= while memmap/ramoops below stay in
- * force.
+ * The built-in command line: this device's root= plus the platform defaults
+ * every SM8850 part needs. \efisp\cmdline.txt, when present, is appended after
+ * this line at boot -- later kernel parameters win, so the file can override
+ * panic= or loglevel= while root= and memmap/ramoops below stay in force.
  *
  * earlycon and a high loglevel are the two that make a failure visible.
  * console=tty0 is what makes them visible here: there is no UART on this
@@ -339,8 +415,9 @@ LogProgress (
  * max_reason=4 lets the dump happen for every reason pstore knows about.
  */
 STATIC CONST CHAR8  mCmdline[] =
-  "earlycon console=tty0 loglevel=8 log_buf_len=16M panic=30 "
-  "clk_ignore_unused pd_ignore_unused memmap=4M$0xB8000000 "
+  "root=PARTUUID=4B3A4040-F3F4-411C-B61B-D9783E4A9E25 earlycon "
+  "console=tty0 loglevel=8 log_buf_len=16M panic=30 clk_ignore_unused "
+  "pd_ignore_unused memmap=4M$0xB8000000 "
   "ramoops.mem_address=0xB8000000 ramoops.mem_size=0x400000 "
   "ramoops.record_size=0x40000 ramoops.console_size=0x200000 "
   "ramoops.max_reason=4";
@@ -1198,7 +1275,7 @@ ScanLastImage (
 #define PSTORE_MEM       0x400000U
 #define PSTORE_RECORD    0x40000U
 #define PSTORE_CONSOLE   0x200000U
-#define KLOG_PATH        L"\\efisp\\klog.txt"
+#define KLOG_PATH        L"\\klog.txt"
 
 STATIC
 EFI_STATUS
@@ -1529,23 +1606,29 @@ SfbKernelBootEntry (
   Print (L"SfbKernelBoot: starting\n");
 
   /*
-   * --- 1. find the kernel volume ----------------------------------------
+   * --- 1. find the kernel volume and the log volume ---------------------
    *
-   * One volume serves both purposes: it carries the kernel, device tree and
-   * ramdisk, and it takes the progress log. It is the persist partition --
-   * the volume this application is loaded from, whose efisp directory is the
-   * BDS's boot root. Its ext4 driver may be read-only, so the log is
-   * best-effort; the files themselves only have to be readable.
+   * The kernel volume is persist: it carries the kernel, device tree and
+   * ramdisk, the volume this application is loaded from, whose efisp
+   * directory is the BDS's boot root. Failure to find it is fatal:
+   * without it there is nothing to boot.
    *
-   * Failure to find it is fatal, unlike a log failure would be: without it
-   * there is nothing to boot.
+   * The log volume is recovery_a, opened separately so the log does not
+   * depend on persist's ext4 driver allowing writes. Failure there is
+   * not fatal -- the kernel volume takes over and the log stays
+   * best-effort, as it always was.
    */
   Status = OpenKernelVolume (&Root);
   if (EFI_ERROR (Status)) {
     Print (L"SfbKernelBoot: no kernel volume (%r)\n", Status);
     return Status;
   }
-  LogRoot = Root;
+  Status = OpenLogVolume (&LogRoot);
+  if (EFI_ERROR (Status) || LogRoot == NULL) {
+    Print (L"SfbKernelBoot: no log volume (%r), logging on kernel volume\n",
+           Status);
+    LogRoot = Root;
+  }
   LogProgress (LogRoot, "---- SfbKernelBoot: starting a new attempt ----");
 
   /*
