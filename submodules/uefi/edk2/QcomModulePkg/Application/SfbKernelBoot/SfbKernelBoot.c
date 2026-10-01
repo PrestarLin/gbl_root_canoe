@@ -400,7 +400,7 @@ LogProgress (
  * The built-in command line: this device's root= plus the platform defaults
  * every SM8850 part needs. \efisp\cmdline.txt, when present, is appended after
  * this line at boot -- later kernel parameters win, so the file can override
- * panic= or loglevel= while root= and memmap/ramoops below stay in force.
+ * panic= or loglevel= while root= and memmap below stay in force.
  *
  * earlycon and a high loglevel are the two that make a failure visible.
  * console=tty0 is what makes them visible here: there is no UART on this
@@ -409,20 +409,17 @@ LogProgress (
  * frame buffer console exists as soon as that driver binds -- late, but it
  * replays the log buffer, so the whole boot appears on the panel at once.
  *
- * The ramoops settings are the other channel, and the one that works when the
- * kernel dies before any console exists: the zones live in DRAM at an address
- * outside the memory the device tree describes, so nothing else uses it.
- * memmap reserves it so the kernel does not either. panic=30 makes a panic
- * reboot -- a warm reset, which is what leaves the zones readable -- and
- * max_reason=4 lets the dump happen for every reason pstore knows about.
+ * The ramoops region comes from the device tree (the reserved-memory node
+ * the packaging overlay bakes into every dtb), so no ramoops.* parameters
+ * go here: with both sources a second dummy device probes and fails with
+ * "already initialized". memmap reserves the same 4M so nothing else takes
+ * it either, and panic=30 makes a panic reboot -- a warm reset, which is
+ * what leaves the zones readable.
  */
 STATIC CONST CHAR8  mCmdline[] =
   "root=PARTUUID=4B3A4040-F3F4-411C-B61B-D9783E4A9E25 earlycon "
   "console=tty0 loglevel=8 log_buf_len=16M panic=30 clk_ignore_unused "
-  "pd_ignore_unused memmap=4M$0xB8000000 "
-  "ramoops.mem_address=0xB8000000 ramoops.mem_size=0x400000 "
-  "ramoops.record_size=0x40000 ramoops.console_size=0x200000 "
-  "ramoops.max_reason=4";
+  "pd_ignore_unused memmap=4M$0xB8000000";
 
 /*
  * The arm64 image header, per Documentation/arm64/booting.rst. The kernel here
@@ -695,7 +692,7 @@ Done:
  * Assemble the command line handed to the kernel: the built-in defaults
  * first, then \efisp\cmdline.txt after them when the volume carries one.
  * Parameters later in the line win, so the file can override panic= or add a
- * device-specific root= without the platform defaults losing memmap/ramoops.
+ * device-specific root= without the platform defaults losing memmap.
  *
  * *Len comes back including the terminator, the same convention the checks
  * around the call site already use. A file that cannot be read leaves the
@@ -1340,7 +1337,8 @@ ScanLastImage (
  * driver that may never probe. So the log is taken out of the machine instead,
  * through ramoops.
  *
- * The pstore RAM backend is configured by the command line to keep its zones in
+ * The pstore RAM backend is configured by the device tree's reserved-memory
+ * node to keep its zones in
  * DRAM at PSTORE_REGION -- which is outside the memory the device tree
  * describes, so the kernel never allocates it, and on the same 4 GB page table
  * mapping as the marker area this application already reads. The kernel writes

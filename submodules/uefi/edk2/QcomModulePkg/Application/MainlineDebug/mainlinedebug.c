@@ -324,20 +324,17 @@ LogProgress (
  * frame buffer console exists as soon as that driver binds -- late, but it
  * replays the log buffer, so the whole boot appears on the panel at once.
  *
- * The ramoops settings are the other channel, and the one that works when the
- * kernel dies before any console exists: the zones live in DRAM at an address
- * outside the memory the device tree describes, so nothing else uses it.
- * memmap reserves it so the kernel does not either. panic=5 makes a panic
- * reboot -- a warm reset, which is what leaves the zones readable -- and
- * max_reason=4 lets the dump happen for every reason pstore knows about.
+ * The ramoops region comes from the device tree (the reserved-memory node
+ * the packaging overlay bakes into every dtb), so no ramoops.* parameters
+ * go here: with both sources a second dummy device probes and fails with
+ * "already initialized". memmap reserves the same 4M so nothing else takes
+ * it either, and panic=5 makes a panic reboot -- a warm reset, which is
+ * what leaves the zones readable.
  */
 STATIC CONST CHAR8  mCmdline[] =
   "root=PARTUUID=4B3A4040-F3F4-411C-B61B-D9783E4A9E25 earlycon "
   "console=tty0 loglevel=8 log_buf_len=16M panic=5 clk_ignore_unused "
-  "pd_ignore_unused memmap=4M$0xB8000000 "
-  "ramoops.mem_address=0xB8000000 ramoops.mem_size=0x400000 "
-  "ramoops.record_size=0x40000 ramoops.console_size=0x200000 "
-  "ramoops.max_reason=4";
+  "pd_ignore_unused memmap=4M$0xB8000000";
 
 /*
  * The arm64 image header, per Documentation/arm64/booting.rst. The kernel here
@@ -1081,7 +1078,8 @@ ScanLastImage (
  * driver that may never probe. So the log is taken out of the machine instead,
  * through ramoops.
  *
- * The pstore RAM backend is configured by the command line to keep its zones in
+ * The pstore RAM backend is configured by the device tree's reserved-memory
+ * node to keep its zones in
  * DRAM at PSTORE_REGION -- which is outside the memory the device tree
  * describes, so the kernel never allocates it, and on the same 4 GB page table
  * mapping as the marker area this application already reads. The kernel writes
